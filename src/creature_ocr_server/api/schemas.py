@@ -43,12 +43,27 @@ class ModelInfo(BaseModel):
 
 
 class EngineInfo(BaseModel):
-    """One backend: whether it can be used, and what it will answer for."""
+    """One backend: whether it can be used, and what it will answer for.
+
+    `settings` and `cache_name` are filled only for an engine whose reader is
+    not a model - a Document AI processor, a NIM deployment. Those engines list
+    no models, so without these two fields their cache key existed nowhere a
+    client could read it before asking, and a client that cannot build the key
+    cannot look in its cache first. That is the one thing GET /v1/engines is
+    for. (3.2, 4.2)
+
+    They stay empty for an engine that does list models, because there the key
+    belongs to the model and ModelInfo already carries it. Filling them from a
+    blank model id would publish a string describing a reader that does not
+    exist, which is worse than publishing nothing.
+    """
 
     name: str
     ready: bool
     detail: str = ""
     default_model: str = ""
+    settings: str = ""
+    cache_name: str = ""
     models: list[ModelInfo] = Field(default_factory=list)
 
 

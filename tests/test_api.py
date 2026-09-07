@@ -159,6 +159,33 @@ class EnginesTest(ApiTestCase):
             [model["cache_name"] for model in found["models"]], ["fake-1", "fake-2"]
         )
 
+    def test_an_engine_with_no_models_publishes_its_own_cache_key(self):
+        # documentai is read by a processor and nemotron by a deployment, so
+        # neither lists a model - and without these two fields their key
+        # existed nowhere a client could read it before asking. Looking in the
+        # cache first is the one thing this endpoint is for. (3.2)
+        registry = answering(
+            models=classmethod(lambda cls: ()),
+            default_model=classmethod(lambda cls: ""),
+            settings_for=classmethod(lambda cls, model: "processor-7 checks=abc"),
+            cache_name_for=classmethod(lambda cls, model: "fake-processor-7"),
+        )
+        found = self.client(registry).get("/v1/engines").json()[0]
+
+        self.assertEqual(found["models"], [])
+        self.assertEqual(found["settings"], "processor-7 checks=abc")
+        self.assertEqual(found["cache_name"], "fake-processor-7")
+
+    def test_an_engine_with_models_says_nothing_at_its_own_level(self):
+        # There the key belongs to the model and ModelInfo already carries it.
+        # One built from a blank model id would name a reader that does not
+        # exist, which is worse than saying nothing.
+        found = self.client().get("/v1/engines").json()[0]
+
+        self.assertTrue(found["models"])
+        self.assertEqual(found["settings"], "")
+        self.assertEqual(found["cache_name"], "")
+
     def test_an_unusable_engine_says_why_rather_than_disappearing(self):
         registry = answering(requires=("NOT_SET_ANYWHERE",))
         found = self.client(registry).get("/v1/engines").json()[0]

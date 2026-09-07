@@ -134,6 +134,8 @@ SDK が自分で同じファイルを見つける。(6.3)
         "ready": false,
         "detail": "DOCUMENTAI_LOCATION is not set: see .env.example",
         "default_model": "",
+        "settings": "// hints=ja checks=79ebbe0c",
+        "cache_name": "documentai",
         "models": []
       },
       {
@@ -141,6 +143,8 @@ SDK が自分で同じファイルを見つける。(6.3)
         "ready": true,
         "detail": "",
         "default_model": "gemini-3.7-flash",
+        "settings": "",
+        "cache_name": "",
         "models": [
           {
             "name": "gemini-3.7-flash",
@@ -153,6 +157,8 @@ SDK が自分で同じファイルを見つける。(6.3)
         "name": "nemotron",
         "ready": false,
         "detail": "NEMOTRON_ENDPOINT is not set: see .env.example",
+        "settings": "nemotron-ocr-v2 v2_multilingual merge=word unsure_below=0.5 endpoint= checks=79ebbe0c",
+        "cache_name": "nemotron-v2_multilingual",
         "default_model": "",
         "models": []
       }
@@ -168,11 +174,19 @@ SDK が自分で同じファイルを見つける。(6.3)
 から。前者はプロセッサ、後者は `NEMOTRON_ENDPOINT` が指す先そのものが読み手で、
 どちらもリクエストで選べるものではない。`model` を送れば 400 になる。
 
-その代償として、**この二つは `settings` をここで公開できない**。`settings` と
-`cache_name` はモデルごとに並ぶ構造だからで、モデルの無いエンジンには置き場所が
-無い。値は `POST /v1/ocr` の応答に入って返るので、クライアントは**一度読んで
-から**でないとキャッシュキーを組み立てられない。gemini と違って「頼む前に
-キャッシュを見る」ができない、という一点だけが未解決。(3.2)
+だからこの二つは `settings` と `cache_name` を**エンジンの階層で**返す。モデルの
+無いエンジンには `models[]` という置き場所が無く、そこに何も無いままだと
+キャッシュキーが**頼む前に読める場所のどこにも存在しない**ことになる。頼む前に
+キャッシュを見られるようにするのがこのエンドポイントの唯一の仕事なので、それ
+では用を成さない。(3.2)
+
+逆にモデルを取るエンジンでは、この二つは空のまま。鍵はモデルのものであり
+`models[]` が既に持っているからで、空のモデル ID から組み立てた文字列は
+**存在しない読み手を指す**。何も言わないほうがまだ良い。
+
+`ready: false` のエンジンの鍵は、まだ設定されていない読み手を書き表している。
+上の例の `//` がそれで、設定が入れば実際のプロジェクトとプロセッサに変わる。
+鍵として使ってよいかは `ready` が答える。
 
 ### `GET /v1/sheet`
 
@@ -354,10 +368,11 @@ Python なら:
 
 ### 4. キャッシュの鍵
 
-`cache_name` がディレクトリ名、`settings` がその中の鍵。gemini はどちらも
-`GET /v1/engines` で先に取れるので、**ページを頼む前に**キャッシュを見て、
-当たれば 1 回も課金せずに済む。`documentai` と `nemotron` は `settings` を
-応答でしか返せない（「未実装」の項）。
+`cache_name` がディレクトリ名、`settings` がその中の鍵。**どのエンジンでも
+`GET /v1/engines` で先に取れる**ので、ページを頼む**前に**キャッシュを見て、
+当たれば 1 回も課金せずに済む。gemini はモデルごとに `models[]` の中、
+`documentai` と `nemotron` はモデルを取らないのでエンジンの階層に入っている。
+どちらを読むかは `models` が空かどうかで決まる。
 
 `sheet_fingerprint` が `GET /v1/sheet` の指紋と食い違ったら、用紙の定義が
 変わったということ。**気づくためのもので、止めるためのものではない。**
@@ -500,10 +515,6 @@ SDK クライアントが増え続ける。
 
 ## 未実装
 
-- **モデルを取らないエンジンの `settings` 公開。** 上の `/v1/engines` の項を
-  参照。`documentai` と `nemotron` のキャッシュキーは応答でしか返らない。
-  `EngineInfo` に `settings` と `cache_name` を足せば済むが、API の契約が
-  広がるので別の判断。
 - **サーバ側キャッシュ。** アプリ側が既にページごとに持っている。
 - **バッチ endpoint、非同期ジョブ、PDF アップロード。** 切り抜きと個人情報帯の
   除去は、これからもアプリ側に残る。

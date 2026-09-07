@@ -214,19 +214,27 @@ async def list_engines() -> list[EngineInfo]:
     for name in sorted(engines.ENGINES):
         engine = engines.ENGINES[name]
         ready, detail = engines.status(name)
+        offered = engine.models()
+        # An engine that offers no models is its own reader, so its key has no
+        # ModelInfo to live in and is published here instead. One that does
+        # offer them says nothing at this level: the key belongs to the model,
+        # and a key built from a blank model id would name a reader that does
+        # not exist. (3.2)
         found.append(
             EngineInfo(
                 name=name,
                 ready=ready,
                 detail=detail,
                 default_model=engine.default_model(),
+                settings="" if offered else engine.settings_for(""),
+                cache_name="" if offered else (engine.cache_name_for("") or name),
                 models=[
                     ModelInfo(
                         name=model,
                         settings=engine.settings_for(model),
                         cache_name=engine.cache_name_for(model),
                     )
-                    for model in engine.models()
+                    for model in offered
                 ],
             )
         )
