@@ -94,12 +94,13 @@ class ApiTestCase(unittest.TestCase):
         )
         return self.enterContext(TestClient(app))
 
-    def read(self, client, image=PNG, **form):
+    def read(self, client, image=PNG, headers=None, **form):
         """POST one page."""
         return client.post(
             "/v1/ocr",
             files={"image": ("page01.png", image, "image/png")},
             data=form,
+            headers=headers,
         )
 
 
@@ -228,6 +229,75 @@ class AuthTest(ApiTestCase):
 
         self.assertNotIn("secret", found.text)
         self.assertNotIn("guess", found.text)
+
+    def test_a_bearer_token_carries_the_same_key(self):
+        client = self.client(environment={config.SERVER_ENV_API_KEY: "secret"})
+
+        found = client.get("/v1/engines", headers={"Authorization": "Bearer secret"})
+
+        self.assertEqual(found.status_code, 200)
+
+    def test_the_bearer_scheme_is_read_without_case(self):
+        # RFC 7235 says the scheme is case insensitive, and a generated client
+        # is as likely to write one as the other.
+        client = self.client(environment={config.SERVER_ENV_API_KEY: "secret"})
+
+        found = client.get("/v1/engines", headers={"Authorization": "bearer secret"})
+
+        self.assertEqual(found.status_code, 200)
+
+    def test_a_wrong_bearer_token_is_refused(self):
+        client = self.client(environment={config.SERVER_ENV_API_KEY: "secret"})
+
+        found = client.get("/v1/engines", headers={"Authorization": "Bearer guess"})
+
+        self.assertEqual(found.status_code, 401)
+
+    def test_another_scheme_is_not_a_key(self):
+        # Basic base64("secret") is not the key, and must not be read as one.
+        client = self.client(environment={config.SERVER_ENV_API_KEY: "secret"})
+
+        found = client.get("/v1/engines", headers={"Authorization": "Basic c2VjcmV0"})
+
+        self.assertEqual(found.status_code, 401)
+
+    def test_reading_a_page_takes_a_bearer_token_too(self):
+        client = self.client(environment={config.SERVER_ENV_API_KEY: "secret"})
+
+        found = self.read(client, headers={"Authorization": "Bearer secret"})
+
+        self.assertEqual(found.status_code, 200)
+
+    def test_the_refusal_says_which_headers_are_read(self):
+        client = self.client(environment={config.SERVER_ENV_API_KEY: "secret"})
+
+        found = client.get("/v1/engines")
+
+        self.assertIn(security.HEADER, found.json()["detail"])
+        self.assertIn(security.SCHEME, found.json()["detail"])
+        # A 401 that accepts Bearer is supposed to say so. It names the scheme
+        # and never the secret.
+        self.assertEqual(found.headers["WWW-Authenticate"], security.SCHEME)
+
+    def test_a_header_that_is_not_ascii_is_a_refusal_not_a_crash(self):
+        # A header arrives as whatever the client sent, decoded latin-1, and
+        # hmac.compare_digest refuses a str that is not ASCII. Comparing text
+        # made this a 500 that an unauthenticated request could ask for at
+        # will, which on a server bound to anything but the loopback address is
+        # a crash anyone can reach. (6.2)
+        client = self.client(environment={config.SERVER_ENV_API_KEY: "secret"})
+
+        # As bytes, because httpx will not encode a non-ASCII str into a
+        # header at all - which is exactly why this arrives from a real client
+        # rather than from a well behaved library.
+        for headers in (
+            {security.HEADER.encode(): b"\xff"},
+            {b"Authorization": b"Bearer \xff"},
+        ):
+            with self.subTest(headers=headers):
+                self.assertEqual(
+                    client.get("/v1/engines", headers=headers).status_code, 401
+                )
 
 
 class ReadPageTest(ApiTestCase):

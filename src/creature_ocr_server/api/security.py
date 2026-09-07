@@ -5,11 +5,20 @@ open port is an open account. One shared key in a header is the whole of it,
 which is the right size for a service a desktop application on the same network
 talks to; anything more belongs to whatever fronts it.
 
+Two headers carry it, `X-API-Key` and `Authorization: Bearer`, and they carry
+the same one key. Bearer is what an HTTP client library, a gateway and a
+generated SDK all reach for by default; the plain header is what a curl in a
+README wants. Neither is a different credential, so there is still one secret
+and one setting to rotate.
+
 Header only, never a query string: a query string is written into every access
 log and every proxy log it passes through, and a key in a log is a key. The
-comparison is constant time, the key is never logged, and it is never put into
-an engine's settings - which is published by GET /v1/engines and written into a
-client's cache file. (6.2, 6.3)
+comparison is constant time and is made over bytes rather than text, because a
+header arrives as whatever the client sent and hmac.compare_digest refuses a
+str that is not ASCII - which would turn a wrong key into a 500 that an
+unauthenticated request could ask for at will. The key is never logged, and it
+is never put into an engine's settings - which is published by GET /v1/engines
+and written into a client's cache file. (6.2, 6.3)
 """
 
 from __future__ import annotations
@@ -25,6 +34,8 @@ from .. import config
 logger = logging.getLogger(__name__)
 
 HEADER = "X-API-Key"
+BEARER = "Authorization"
+SCHEME = "Bearer"
 
 
 def configured_key() -> str:
@@ -50,8 +61,44 @@ def announce() -> None:
         )
 
 
-def require_key(x_api_key: str | None = Header(default=None)) -> None:
+def _bearer(header: str | None) -> str | None:
+    """The token out of an Authorization header, or None if it holds no Bearer.
+
+    The scheme is compared without case, which RFC 7235 requires of it, and the
+    token is taken as the rest of the line: a key is not a place to be clever
+    about whitespace, and something that is not a Bearer at all is not a
+    failed key but a header this server has no opinion about.
+    """
+    if not header:
+        return None
+    scheme, _, token = header.partition(" ")
+    if scheme.lower() != SCHEME.lower():
+        return None
+    return token.strip()
+
+
+def _matches(offered: str | None, expected: str) -> bool:
+    """Whether an offered key is the configured one, in constant time.
+
+    Over bytes, because a header is whatever the client sent: Starlette decodes
+    one as latin-1, so any byte above 0x7f arrives as a str that
+    hmac.compare_digest refuses outright. Comparing text there turns a wrong
+    key into a 500, which is a crash an unauthenticated request can ask for
+    whenever it likes. (6.2)
+    """
+    if offered is None:
+        return False
+    return hmac.compare_digest(offered.encode("utf-8"), expected.encode("utf-8"))
+
+
+def require_key(
+    x_api_key: str | None = Header(default=None),
+    authorization: str | None = Header(default=None),
+) -> None:
     """Refuse a request that does not carry the configured key.
+
+    Either header will do and both hold the same key, so a client picks the one
+    its HTTP library makes easy rather than the one this server preferred.
 
     No key configured means no check, so a developer can start the server and
     use it without inventing one. announce() above is what stops that being a
@@ -60,9 +107,15 @@ def require_key(x_api_key: str | None = Header(default=None)) -> None:
     expected = configured_key()
     if not expected:
         return
-    if x_api_key is None or not hmac.compare_digest(x_api_key, expected):
-        # The same answer either way, and nothing about the key in it.
+    # Both are weighed, never one and then the other on a condition, so what
+    # comes back says nothing about which header was tried.
+    offered = (_matches(x_api_key, expected), _matches(_bearer(authorization), expected))
+    if not any(offered):
+        # The same answer to every way of getting it wrong, and nothing about
+        # the key in it. WWW-Authenticate because a 401 that accepts Bearer is
+        # supposed to say so; it names the scheme, never the secret.
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,
-            detail=f"{HEADER} is missing or wrong",
+            detail=f"{HEADER} or {BEARER}: {SCHEME} is missing or wrong",
+            headers={"WWW-Authenticate": SCHEME},
         )

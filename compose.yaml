@@ -19,11 +19,19 @@ services:
       # the host's credentials and writes nothing of its own.
       CLOUDSDK_CONFIG: /gcloud
     ports:
-      # Bound to the loopback address on purpose. This server holds a cloud
-      # credential and spends money per request; publishing it on every
-      # interface should be a decision somebody makes, not a default they
-      # inherit. Set SERVER_API_KEY before widening it.
-      - "127.0.0.1:8000:8000"
+      # HOST and PORT name the address you reach the server on, which is what
+      # they already mean for `python -m creature_ocr_server`. Only this side
+      # of the mapping moves: 8000 inside the container is what the CMD, the
+      # EXPOSE and the HEALTHCHECK all name, and changing that would be three
+      # more edits for a number nobody outside ever sees.
+      #
+      # The default is the loopback address on purpose. This server holds a
+      # cloud credential and spends money per request, so publishing it on
+      # every interface has to be a decision somebody makes rather than one
+      # they inherit - which is what HOST=0.0.0.0 is. Set SERVER_API_KEY
+      # before widening it: past this line the key is the only thing between
+      # the network and a billed call.
+      - "${HOST:-127.0.0.1}:${PORT:-8000}:8000"
     volumes:
       # The host's gcloud configuration, read-only. Put the directory gcloud
       # keeps it in into .env as GCLOUD_CONFIG_DIR, with forward slashes:

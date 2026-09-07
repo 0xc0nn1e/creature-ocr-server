@@ -104,7 +104,10 @@ SDK が自分で同じファイルを見つける。(6.3)
 ## API
 
 すべて `/v1` 以下。`SERVER_API_KEY` を設定した場合、`/v1/health` を除く全ての
-エンドポイントが `X-API-Key` ヘッダを要求する。
+エンドポイントが鍵を要求する。ヘッダは `X-API-Key` でも
+`Authorization: Bearer` でもよく、**鍵は同じ一つ**。クライアントの HTTP
+ライブラリが書きやすい方を使えばよい。クエリ文字列に入れてはいけない ―
+通過する全てのアクセスログに残る。
 
 リクエストとレスポンスには `X-Request-ID` が付く。クライアントが送ればそれを
 使い、送らなければサーバが振る。**502 の本文にはベンダのエラー文は入らない**
@@ -246,7 +249,7 @@ SDK が自分で同じファイルを見つける。(6.3)
 | コード | 意味 |
 |---|---|
 | 400 | 未知の engine、許可リストにない model、model を取らない engine への model 指定 |
-| 401 | `X-API-Key` が無いか違う |
+| 401 | `X-API-Key` も `Authorization: Bearer` も無いか違う |
 | 413 | ページが `SERVER_MAX_IMAGE_BYTES` を超えている |
 | 415 | PNG ではない（申告ではなく先頭バイトで判定する） |
 | 429 | 同時実行の空きが `SERVER_QUEUE_TIMEOUT_SECONDS` 以内に出なかった。`Retry-After` 付き |
@@ -280,7 +283,7 @@ SDK が自分で同じファイルを見つける。(6.3)
 | `NVIDIA_API_KEY` | なし | nemotron の bearer トークン |
 | `NEMOTRON_VARIANT` | `v2_multilingual` | どのビルドを指しているか。キャッシュ名になるだけ |
 | `NEMOTRON_MAX_BYTES` | 空 | 超えたら JPEG で再エンコード。画質を捨てるので既定は空 |
-| `SERVER_API_KEY` | 空 | 設定すると `X-API-Key` を要求する |
+| `SERVER_API_KEY` | 空 | 設定すると `X-API-Key` か `Authorization: Bearer` を要求する |
 | `SERVER_MAX_IMAGE_BYTES` | 20 MiB | 受け付けるページの上限 |
 | `SERVER_MAX_CONCURRENCY` | 4 | 同時に走らせるエンジン呼び出し |
 | `SERVER_REQUEST_DEADLINE_SECONDS` | 300 | 1 ページの予算 |
