@@ -24,11 +24,13 @@ WORKDIR /app
 COPY pyproject.toml ./
 COPY src ./src
 
-# [gemini] only. All three engines are implemented, and installing documentai
-# here would pull grpcio and protobuf into an image that is not configured to
-# reach a processor - roughly doubling it, for nothing. GET /v1/engines reports
-# an engine whose extra is missing as not ready and says which extra installs
-# it, which is what the extras pattern is for. (4.2)
+# [documentai,gemini]. All three engines are implemented and two are installed.
+# documentai brings grpcio and protobuf with it - some 25 MB on top of a 117 MB
+# site-packages, most of that grpcio - for an engine that stays unusable until
+# its region and processor id are set. That is paid on purpose: pointing the
+# server at a processor is then a setting rather than a rebuild. Until it is
+# configured GET /v1/engines reports it not ready and says which setting is
+# missing, which is what the extras pattern is for. (4.2)
 #
 # nemotron needs nothing installed to read a page, so this image can serve it
 # as it stands: its extra is pymupdf, wanted only where NEMOTRON_MAX_BYTES asks
@@ -37,7 +39,7 @@ COPY src ./src
 # The source goes away with the build that consumed it. What runs is the copy
 # in site-packages, and a second copy in /app that is not the one running is a
 # trap for whoever next opens a shell in here to work out what is going on.
-RUN pip install --no-cache-dir ".[gemini]" \
+RUN pip install --no-cache-dir ".[documentai,gemini]" \
  && rm -rf /app/src /app/build /app/pyproject.toml
 
 # Nothing here needs to write anywhere. Run the container with a read-only root

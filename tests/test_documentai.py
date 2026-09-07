@@ -501,8 +501,8 @@ class RegistryTest(unittest.TestCase):
     def test_the_whole_module_name_is_what_is_looked_for(self):
         # Not its first segment. `google` is a namespace package that
         # google-auth alone puts on the path, so a check that asked about that
-        # segment would report this engine ready on the shipped container,
-        # which installs [gemini] only, and GET /v1/engines would offer an
+        # segment would report this engine ready anywhere [gemini] is
+        # installed without [documentai], and GET /v1/engines would offer an
         # engine that cannot be built. Unpatched on purpose: patching find_spec
         # is what let this pass while the check was looking at the wrong name.
         with patch.dict(os.environ, ENVIRONMENT):

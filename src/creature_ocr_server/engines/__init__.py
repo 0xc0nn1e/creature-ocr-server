@@ -78,11 +78,11 @@ def _installed(sdk: str) -> bool:
 
     The whole dotted name, never its first segment. `google` is a namespace
     package that google-auth alone puts on the path, so asking about that
-    segment would call google-cloud-documentai installed on the shipped
-    container, which installs [gemini] only - and GET /v1/engines would offer an
-    engine that cannot be built. Only the parent packages are imported, which
-    for a namespace package is no code at all, so this stays the pure check
-    status promises. (4.2)
+    segment would call google-cloud-documentai installed anywhere [gemini] is
+    installed without it - a base install, or a plain `.[gemini]` - and GET
+    /v1/engines would offer an engine that cannot be built. Only the parent
+    packages are imported, which for a namespace package is no code at all, so
+    this stays the pure check status promises. (4.2)
 
     A missing parent raises rather than answering None, which is the same
     answer: the module is not there.
