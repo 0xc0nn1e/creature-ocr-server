@@ -401,7 +401,10 @@ class RefusalTest(ApiTestCase):
         self.assertEqual(found.status_code, 413)
 
     def test_an_unknown_engine_lists_what_there_is(self):
-        found = self.read(self.client(), engine="documentai")
+        # A name no registry holds. Not a real engine's: this case is about a
+        # name that is not registered, and reading as though documentai were
+        # still unimplemented would age badly.
+        found = self.read(self.client(), engine="no-such-engine")
 
         self.assertEqual(found.status_code, 400)
         self.assertIn("fake", found.json()["detail"])

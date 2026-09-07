@@ -44,7 +44,19 @@ def desktop():
         )
     if str(package) not in sys.path:
         sys.path.insert(0, str(package))
-    from creature_ocr import config, ocr
+    try:
+        from creature_ocr import config, ocr
+    except ImportError as exc:
+        # A checkout is there but its own dependencies are not - the desktop
+        # package imports pymupdf at module scope, which this server does not
+        # install. That is the same "cannot compare" as having no checkout at
+        # all, and it has to be a skip rather than 22 errors that read like a
+        # broken parity. The same warning applies. (6.5)
+        raise unittest.SkipTest(
+            f"the desktop checkout at {package} will not import ({exc}); "
+            "install its dependencies. This skip is not a pass - run it where "
+            "both checkouts work."
+        ) from exc
 
     return ocr, config
 

@@ -7,7 +7,9 @@ backend is one file plus one entry below. (4.2, 6.5)
 
 Importing the modules below is therefore free: each names its SDK inside its own
 loader, which nothing calls until an engine is actually built. That is what lets
-this registry hold every engine without making every SDK a dependency.
+this registry hold every engine without making every SDK a dependency. nemotron
+has no SDK to name - it is one HTTP request - so it costs nothing either way,
+and the one library it can want is named inside the function that wants it.
 
 Two things here that the desktop pipeline's registry does not have, and both
 come from being a server:
@@ -32,10 +34,14 @@ import threading
 
 from .. import config
 from ..ocr import OCREngine
+from .documentai import DocumentAIEngine
 from .gemini import GeminiEngine
+from .nemotron import NemotronEngine
 
 ENGINES: dict[str, type[OCREngine]] = {
+    DocumentAIEngine.name: DocumentAIEngine,
     GeminiEngine.name: GeminiEngine,
+    NemotronEngine.name: NemotronEngine,
 }
 
 # Built engines, keyed by (engine, model). Bounded by each engine's own model
@@ -67,6 +73,26 @@ def resolve(name: str | None = None) -> str:
     return chosen
 
 
+def _installed(sdk: str) -> bool:
+    """Whether the vendor module an engine names is importable.
+
+    The whole dotted name, never its first segment. `google` is a namespace
+    package that google-auth alone puts on the path, so asking about that
+    segment would call google-cloud-documentai installed on the shipped
+    container, which installs [gemini] only - and GET /v1/engines would offer an
+    engine that cannot be built. Only the parent packages are imported, which
+    for a namespace package is no code at all, so this stays the pure check
+    status promises. (4.2)
+
+    A missing parent raises rather than answering None, which is the same
+    answer: the module is not there.
+    """
+    try:
+        return importlib.util.find_spec(sdk) is not None
+    except ModuleNotFoundError:
+        return False
+
+
 def status(name: str) -> tuple[bool, str]:
     """Whether this engine could be built, and if not, why not.
 
@@ -81,7 +107,7 @@ def status(name: str) -> tuple[bool, str]:
     for key in engine.requires:
         if not os.environ.get(key, "").strip():
             return False, f"{key} is not set: see .env.example"
-    if engine.sdk and importlib.util.find_spec(engine.sdk.split(".")[0]) is None:
+    if engine.sdk and not _installed(engine.sdk):
         return False, (
             f"{engine.sdk} is not installed: "
             f'pip install -e ".[{engine.extra}]"'

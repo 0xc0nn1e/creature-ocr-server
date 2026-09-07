@@ -25,9 +25,11 @@ dependencies = [
 # comparison. Each extra is named after the engine it enables, so
 # `engine=gemini` and `pip install -e ".[gemini]"` are the same word. (4.1, 6.5)
 #
-# The v1 container installs [gemini] only. documentai is declared so the extra
-# exists the day its engine module is written; installing it now would drag in
-# grpcio and protobuf for an engine this server does not yet implement.
+# The v1 container installs [gemini] only. The other two are declared and
+# implemented but not installed: documentai would drag in grpcio and protobuf,
+# and nemotron's pymupdf is a wheel with a rendering engine inside it, for
+# backends the deployed server is not configured to reach. Installing an extra
+# is what makes its engine usable, which is the whole point of the split.
 #
 # google-genai carries an upper bound where google-cloud-documentai does not:
 # it went 1.x to 2.x with breaking changes to client construction and to the
@@ -40,6 +42,14 @@ dependencies = [
 [project.optional-dependencies]
 gemini = ["google-genai>=2.21,<3", "google-auth>=2.35"]
 documentai = ["google-cloud-documentai>=2.20", "google-auth>=2.35"]
+
+# nemotron reaches NVIDIA over plain HTTP and needs nothing at all to read an
+# ordinary page. pymupdf is here for one function: shrink, which re-encodes a
+# page smaller and is only reached when NEMOTRON_MAX_BYTES asks for it. So the
+# engine reports itself usable without this extra - engines/nemotron.py names
+# no SDK for engines.status to check - and says what to install at the point
+# the setting is actually used.
+nemotron = ["pymupdf>=1.24"]
 
 # Only what the tests need on top of the base install. httpx is what
 # fastapi.testclient.TestClient drives the app with; it opens no socket.

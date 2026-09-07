@@ -44,6 +44,11 @@ SDK・セルグリッド・値チェックは全部こちら**。アプリ側に
 だけでもパッケージは入り、テストも全部通る。エンジン名と extra 名は同じ語なので、
 `engine=gemini` と `pip install -e ".[gemini]"` は対になる。(4.2, 6.5)
 
+エンジンは三つ。`documentai` を使うなら `.[documentai]`、`nemotron` は**何も
+要らない** ― HTTP を一回投げるだけなので、基本インストールのまま動く。
+`.[nemotron]` が要るのは `NEMOTRON_MAX_BYTES` を設定したときだけで、その一つの
+設定のためだけに pymupdf が入る。
+
 ## Docker で動かす
 
 **認証はホスト側で済ませる。** `gcloud auth application-default login` は
@@ -122,6 +127,13 @@ SDK が自分で同じファイルを見つける。(6.3)
 
     [
       {
+        "name": "documentai",
+        "ready": false,
+        "detail": "DOCUMENTAI_LOCATION is not set: see .env.example",
+        "default_model": "",
+        "models": []
+      },
+      {
         "name": "gemini",
         "ready": true,
         "detail": "",
@@ -133,6 +145,13 @@ SDK が自分で同じファイルを見つける。(6.3)
             "cache_name": "gemini-3.7-flash"
           }
         ]
+      },
+      {
+        "name": "nemotron",
+        "ready": false,
+        "detail": "NEMOTRON_ENDPOINT is not set: see .env.example",
+        "default_model": "",
+        "models": []
       }
     ]
 
@@ -141,6 +160,16 @@ SDK が自分で同じファイルを見つける。(6.3)
 チェックもこのサーバのものなので、クライアントには自力で計算できない。だから
 ここで公開する。設定が足りないエンジンは `ready: false` になり、`detail` に
 コンストラクタが投げるはずだった文がそのまま入る。(3.2, 4.2)
+
+`documentai` と `nemotron` の `models` が空なのは、**読み手がモデル ID ではない**
+から。前者はプロセッサ、後者は `NEMOTRON_ENDPOINT` が指す先そのものが読み手で、
+どちらもリクエストで選べるものではない。`model` を送れば 400 になる。
+
+その代償として、**この二つは `settings` をここで公開できない**。`settings` と
+`cache_name` はモデルごとに並ぶ構造だからで、モデルの無いエンジンには置き場所が
+無い。値は `POST /v1/ocr` の応答に入って返るので、クライアントは**一度読んで
+から**でないとキャッシュキーを組み立てられない。gemini と違って「頼む前に
+キャッシュを見る」ができない、という一点だけが未解決。(3.2)
 
 ### `GET /v1/sheet`
 
@@ -244,7 +273,13 @@ SDK が自分で同じファイルを見つける。(6.3)
 | `GEMINI_MODEL` | なし | 既定のモデル ID |
 | `GOOGLE_APPLICATION_CREDENTIALS` | 空 | 空なら ADC、パスなら鍵ファイル、`{` 始まりなら鍵そのもの |
 | `GEMINI_MODELS` | `config.py` の一覧 | 許可するモデル、カンマ区切り |
-| `OCR_ENGINE` | `gemini` | 既定のエンジン |
+| `OCR_ENGINE` | `gemini` | 既定のエンジン。`gemini` / `documentai` / `nemotron` |
+| `DOCUMENTAI_LOCATION` | なし | Document AI のリージョン。`us` か `eu` のみ |
+| `DOCUMENTAI_PROCESSOR_ID` | なし | Document OCR プロセッサの ID |
+| `NEMOTRON_ENDPOINT` | なし | ページを POST する URL そのもの。何も足さない |
+| `NVIDIA_API_KEY` | なし | nemotron の bearer トークン |
+| `NEMOTRON_VARIANT` | `v2_multilingual` | どのビルドを指しているか。キャッシュ名になるだけ |
+| `NEMOTRON_MAX_BYTES` | 空 | 超えたら JPEG で再エンコード。画質を捨てるので既定は空 |
 | `SERVER_API_KEY` | 空 | 設定すると `X-API-Key` を要求する |
 | `SERVER_MAX_IMAGE_BYTES` | 20 MiB | 受け付けるページの上限 |
 | `SERVER_MAX_CONCURRENCY` | 4 | 同時に走らせるエンジン呼び出し |
@@ -329,9 +364,10 @@ SDK クライアントが増え続ける。
 
 ## 未実装
 
-- **documentai と nemotron のエンジン。** レジストリと `/v1/engines` は場所を
-  空けてあり、追加はモジュール 1 つとテスト 1 つ。nemotron の `shrink()` は
-  PyMuPDF を要求するので、そのときに依存を足す。
+- **モデルを取らないエンジンの `settings` 公開。** 上の `/v1/engines` の項を
+  参照。`documentai` と `nemotron` のキャッシュキーは応答でしか返らない。
+  `EngineInfo` に `settings` と `cache_name` を足せば済むが、API の契約が
+  広がるので別の判断。
 - **サーバ側キャッシュ。** アプリ側が既にページごとに持っている。
 - **バッチ endpoint、非同期ジョブ、PDF アップロード。** 切り抜きと個人情報帯の
   除去は、これからもアプリ側に残る。

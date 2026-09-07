@@ -341,6 +341,22 @@ CELL_COLUMNS = {
 }
 
 
+# Document AI, using a Document OCR processor. Only the key names are here; the
+# values arrive from the real environment, which in a container means compose's
+# env_file or the orchestrator, never a file baked into the image. Nothing about
+# the processor is hardcoded, so pointing the server at another project, region
+# or processor is a restart rather than a rebuild. (4.2, 6.2, 6.5)
+DOCUMENTAI_ENV_PROJECT = "GOOGLE_CLOUD_PROJECT"
+DOCUMENTAI_ENV_LOCATION = "DOCUMENTAI_LOCATION"
+DOCUMENTAI_ENV_PROCESSOR_ID = "DOCUMENTAI_PROCESSOR_ID"
+
+# Language hints passed to the processor. Measured against a real sheet these
+# changed nothing at all: no hints, ("ja",) and ("ja", "en") gave byte-identical
+# results, Korean output included. Kept because it is the documented way to say
+# what the paper is written in and costs nothing, but do not expect it to fix a
+# misread - the script whitelist above is what actually catches those.
+DOCUMENTAI_LANGUAGE_HINTS = ("ja",)
+
 # Gemini on Vertex AI. Only the key names are here; the values arrive from the
 # real environment, which in a container means compose's env_file or the
 # orchestrator, never a file baked into the image. Nothing about the project,
@@ -404,6 +420,60 @@ GOOGLE_ENV_CREDENTIALS = "GOOGLE_APPLICATION_CREDENTIALS"
 # transcription rather than reasoning. (5.2-4, 6.5)
 GEMINI_TEMPERATURE = 0.0
 GEMINI_TOP_P = 0.1
+
+# NVIDIA NIM, nemotron-ocr-v2. Same rule again: only the key names are here.
+#
+# There is deliberately no default endpoint. NVIDIA serves this model from a
+# per-model URL behind a login, and the same NIM can be run in a container
+# beside this one, so a URL baked in here would either fail every call or,
+# worse, quietly measure a different deployment than the one somebody meant. It
+# is the whole URL the page is posted to and nothing is appended to it: NVIDIA's
+# hosted deployment answers on the model's own URL and a container answers on
+# /v1/ocr under its host, so there is no suffix that would be right for both.
+# Copy it out of the code sample on the model's page at build.nvidia.com.
+# (4.2, 6.2, 6.5)
+NEMOTRON_ENV_ENDPOINT = "NEMOTRON_ENDPOINT"
+NEMOTRON_ENV_API_KEY = "NVIDIA_API_KEY"
+NEMOTRON_ENV_VARIANT = "NEMOTRON_VARIANT"
+NEMOTRON_ENV_MAX_BYTES = "NEMOTRON_MAX_BYTES"
+
+# Which build of nemotron-ocr-v2 the endpoint points at. v2_multilingual is the
+# one that reads Japanese; v2_english is word-level and English only.
+#
+# The request carries no variant field - the deployment is the variant - so this
+# setting steers nothing. It names the cache directory a client keeps and goes
+# into the settings string GET /v1/engines publishes, which is the whole of its
+# job: pointing the server at the other build then keeps two sets of readings
+# instead of overwriting one with the other. (3.2, 4.1)
+NEMOTRON_VARIANT = "v2_multilingual"
+
+# How finely the engine is asked to group what it found. The API offers word,
+# sentence and paragraph and defaults to paragraph; this asks for word.
+#
+# A paragraph on this paper would be merged across the printed rules, and a box
+# is placed into a cell by its centre (grid.cell_at), so one merged box would
+# put a whole row's answers into whichever column its middle happened to land
+# in. Word is the finest the API offers, which is as close as this engine gets
+# to Document AI's per-symbol boxes. (5.2-2, 6.2)
+NEMOTRON_MERGE_LEVEL = "word"
+
+# How long one page may take before the call is abandoned to 6.4's retry. Below
+# SERVER_REQUEST_DEADLINE_SECONDS on purpose: the deadline owns the whole
+# request and this owns one attempt of it, so a hung socket is given up in time
+# for a retry to be worth starting.
+NEMOTRON_TIMEOUT_SECONDS = 120.0
+
+# What counts as a reading the engine was not sure of, so a client can colour it
+# and 7.2 can count it. nemotron reports a confidence per detection, which
+# neither other engine does; below this the box is marked unsure rather than
+# dropped, because 5.2-2 reports rather than rewrites. (5.2-2, 7.2)
+NEMOTRON_UNSURE_BELOW = 0.5
+
+# The qualities tried, best first, when NEMOTRON_MAX_BYTES asks for a page to be
+# made smaller. Only reachable when that setting is filled in: 5.2-3 forbids
+# throwing image quality away, so nothing here happens unless an operator has
+# decided that a re-encoded page beats no reading at all. (5.2-3)
+NEMOTRON_JPEG_QUALITIES = (85, 70, 55, 40)
 
 # Which engine a request that names none is served with. Only the key name and
 # the fallback are here; the value is read where the engine is built, so a test

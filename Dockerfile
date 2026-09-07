@@ -24,12 +24,15 @@ WORKDIR /app
 COPY pyproject.toml ./
 COPY src ./src
 
-# [gemini] only. documentai is declared in pyproject so the extra exists the
-# day its engine module is written, but installing it now would pull grpcio and
-# protobuf into an image that has no Document AI engine to use them - roughly
-# doubling it, for nothing. GET /v1/engines reports an engine whose extra is
-# missing as not ready and says which extra installs it, which is what the
-# extras pattern is for. (4.2)
+# [gemini] only. All three engines are implemented, and installing documentai
+# here would pull grpcio and protobuf into an image that is not configured to
+# reach a processor - roughly doubling it, for nothing. GET /v1/engines reports
+# an engine whose extra is missing as not ready and says which extra installs
+# it, which is what the extras pattern is for. (4.2)
+#
+# nemotron needs nothing installed to read a page, so this image can serve it
+# as it stands: its extra is pymupdf, wanted only where NEMOTRON_MAX_BYTES asks
+# for a page to be re-encoded smaller.
 
 # The source goes away with the build that consumed it. What runs is the copy
 # in site-packages, and a second copy in /app that is not the one running is a

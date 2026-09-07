@@ -20,6 +20,7 @@ venv/
 # them, but a page dropped here while debugging must not be committed either.
 /output/
 /input/
+/demo/
 
 # macOS
 .DS_Store

@@ -14,9 +14,11 @@ the key JSON itself. For a container the path form is the one to use, with the
 key mounted read-only from outside the image, so rotating it is a restart
 rather than a rebuild and the key never enters a layer anybody can copy.
 
-Both engines come through here, so the choice is one setting rather than one per
-engine, and google.oauth2 is named in one place the way each vendor SDK is named
-in one place. Nothing is imported until an engine is actually built. (4.2, 6.5)
+Both Google engines come through here, so the choice is one setting rather than
+one per engine, and google.oauth2 is named in one place the way each vendor SDK
+is named in one place. Nothing is imported until an engine is actually built.
+nemotron authenticates with a bearer token instead and reads it through api_key
+below, so this module stays the only place a credential is read. (4.2, 6.5)
 
 The credential never leaves this module. It is not part of OCREngine.settings,
 which is published by GET /v1/engines and written into a client's cache file, so
@@ -133,4 +135,24 @@ def credentials(setting: str | None = None):
     logger.info(
         "authenticating as the service account %s", found.service_account_email
     )
+    return found
+
+
+def api_key(name: str) -> str:
+    """The bearer token the environment names, for an engine that uses one.
+
+    Here rather than in the engine so that every credential this package reads
+    is read in one file, and so the two rules that matter are stated once: the
+    token never reaches OCREngine.settings, which GET /v1/engines publishes and
+    a client writes into its cache file, and it is never logged - not even
+    truncated, because a prefix of a key is still part of a key. (6.2, 6.3)
+
+    Missing raises ValueError rather than returning empty, so /v1/ocr answers
+    503 naming the setting instead of sending a page nobody can be charged for
+    and collecting an authentication failure per request.
+    """
+    found = os.environ.get(name, "").strip()
+    if not found:
+        raise ValueError(f"{name} is not set: see .env.example")
+    logger.info("authenticating with the token in %s", name)
     return found

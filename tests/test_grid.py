@@ -117,27 +117,41 @@ class NoImageLibraryTest(unittest.TestCase):
     so the two files are deliberately different, and this is the difference.
     """
 
-    def test_importing_the_grid_pulls_in_no_decoder(self):
+    def loaded(self, prefixes):
+        return {name for name in sys.modules if name.startswith(prefixes)}
+
+    def imported_by_the_grid(self, prefixes):
+        """What importing the grid pulls in, on a machine that has the lot.
+
+        These are borrowed out of sys.modules for the duration rather than
+        subtracted from what was there before, because another test module may
+        legitimately have one of them loaded already: the nemotron extra brings
+        a decoder, and test_nemotron imports it at module scope, which discovery
+        does before any of this runs. A delta measured against that is empty
+        whatever the grid imports, so the invariant would stop being checked on
+        exactly the machines that have the libraries to break it. Emptied, a
+        grid that reaches for one has to load it again, and it shows.
+
+        The same objects go back afterwards, so nothing is re-imported and no
+        module ends up with two copies of itself.
+        """
+        borrowed = {name: sys.modules.pop(name) for name in self.loaded(prefixes)}
+        self.addCleanup(sys.modules.update, borrowed)
         for name in [m for m in sys.modules if m.startswith("creature_ocr_server")]:
             del sys.modules[name]
         self.addCleanup(importlib.import_module, "creature_ocr_server.grid")
 
         importlib.import_module("creature_ocr_server.grid")
 
-        loaded = [m for m in sys.modules if m.startswith(("pymupdf", "fitz", "PIL"))]
-        self.assertEqual(loaded, [])
+        return sorted(self.loaded(prefixes))
+
+    def test_importing_the_grid_pulls_in_no_decoder(self):
+        self.assertEqual(self.imported_by_the_grid(("pymupdf", "fitz", "PIL")), [])
 
     def test_importing_the_grid_pulls_in_no_vendor_sdk(self):
         # 4.2: a vendor SDK is named inside an engine module and nowhere else,
         # so the package installs and this suite passes with none of them.
-        for name in [m for m in sys.modules if m.startswith("creature_ocr_server")]:
-            del sys.modules[name]
-        self.addCleanup(importlib.import_module, "creature_ocr_server.grid")
-
-        importlib.import_module("creature_ocr_server.grid")
-
-        loaded = [m for m in sys.modules if m.startswith("google")]
-        self.assertEqual(loaded, [])
+        self.assertEqual(self.imported_by_the_grid(("google",)), [])
 
 
 if __name__ == "__main__":
