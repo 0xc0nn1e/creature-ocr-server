@@ -1,16 +1,23 @@
-# The credential arrives at run time and never in the image: put the service
-# account key in secrets/, which is git-ignored and mounted read-only below,
-# and point GOOGLE_APPLICATION_CREDENTIALS at it from .env. (6.2, 6.3)
+# Authentication happens on the host and is mounted in. `gcloud auth
+# application-default login` needs a browser and writes into the host's own
+# gcloud configuration, so it is never run inside the container: what it wrote
+# there would disappear with the container, and there is nothing to open a
+# browser with anyway. (6.3)
 services:
   ocr:
     build: .
     image: creature-ocr-server:0.1.0
-    # Read on this machine at start-up, never copied into a layer. Not required,
-    # so the container starts without one and GET /v1/engines says what is
-    # missing rather than the container refusing to exist.
+    # Read on this machine at start-up, never copied into a layer. Not
+    # required, so the container starts without one and GET /v1/engines says
+    # what is missing rather than the container refusing to exist.
     env_file:
       - path: .env
         required: false
+    environment:
+      # Where the SDK looks for what `gcloud auth application-default login`
+      # left behind. Pointing it at the mount below means the container reads
+      # the host's credentials and writes nothing of its own.
+      CLOUDSDK_CONFIG: /gcloud
     ports:
       # Bound to the loopback address on purpose. This server holds a cloud
       # credential and spends money per request; publishing it on every
@@ -18,6 +25,20 @@ services:
       # inherit. Set SERVER_API_KEY before widening it.
       - "127.0.0.1:8000:8000"
     volumes:
+      # The host's gcloud configuration, read-only. Put the directory gcloud
+      # keeps it in into .env as GCLOUD_CONFIG_DIR, with forward slashes:
+      #
+      #   Windows        C:/Users/<you>/AppData/Roaming/gcloud
+      #   macOS, Linux   /home/<you>/.config/gcloud
+      #
+      # It falls back to ./secrets, which holds no
+      # application_default_credentials.json - so leaving it unset simply
+      # means no ADC, which is what a deployment authenticating with a service
+      # account key wants instead. Read-only because nothing here should ever
+      # write to your gcloud configuration. (6.3)
+      - ${GCLOUD_CONFIG_DIR:-./secrets}:/gcloud:ro
+      # The other way: a service account key file, git-ignored, pointed at by
+      # GOOGLE_APPLICATION_CREDENTIALS. Also read-only, also never in a layer.
       - ./secrets:/run/secrets:ro
     # Nothing in this container writes. The upload parser is configured to keep
     # a page in memory, and this is the second half of that: a page that

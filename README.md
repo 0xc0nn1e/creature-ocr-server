@@ -46,18 +46,49 @@ SDK・セルグリッド・値チェックは全部こちら**。アプリ側に
 
 ## Docker で動かす
 
-    cp .env.example .env      # 値を埋める
-    cp <サービスアカウント鍵>.json secrets/
+**認証はホスト側で済ませる。** `gcloud auth application-default login` は
+ブラウザを開き、ホストの gcloud 設定に書き込む。コンテナの中でやる意味は
+無い ― 開くブラウザが無いし、書いたものはコンテナと一緒に消える。
+
+    gcloud auth application-default login
+    gcloud auth application-default set-quota-project <プロジェクト>
+
+    cp .env.example .env      # 値を埋める。GCLOUD_CONFIG_DIR も
     docker compose up --build
+
+`GCLOUD_CONFIG_DIR` にはホストの gcloud 設定ディレクトリを、**円記号ではなく
+スラッシュ**で書く。
+
+| OS | 場所 |
+|---|---|
+| Windows | `C:/Users/<自分>/AppData/Roaming/gcloud` |
+| macOS, Linux | `/home/<自分>/.config/gcloud` |
+
+compose はそこを `/gcloud` に**読み取り専用**でマウントし、`CLOUDSDK_CONFIG`
+を同じ場所へ向ける。コンテナはホストの資格情報を読むだけで、自分では何も
+書かない。`python -m creature_ocr_server` で直接動かす場合は空のままでよい。
+SDK が自分で同じファイルを見つける。(6.3)
+
+### サービスアカウントを使う場合
+
+無人運用や共有環境では、ADC は運用を「そのマシンで最後にログインした人」に
+縛ってしまう。その場合は鍵を `secrets/` に置き、`.env` の
+`GOOGLE_APPLICATION_CREDENTIALS` で `/run/secrets/<鍵>.json` を指す。
+`GCLOUD_CONFIG_DIR` は空のままでよい。
+
+鍵には `roles/aiplatform.user` が要る。無いと全ページが
+`403 PERMISSION_DENIED` になり、**権限不足ではなく壊れた配備のように見える**。
+
+### 公開範囲
 
 `compose.yaml` は既定で `127.0.0.1:8000` にだけ公開する。**このサーバはクラウド
 資格情報を持ち、リクエストごとに課金される**ので、外に開くのは意図した決定で
 あるべきで、既定で引き継ぐものではない。開く前に `SERVER_API_KEY` を設定する
 こと。
 
-鍵はイメージに入らない。`secrets/` を読み取り専用でマウントし、`.env` の
-`GOOGLE_APPLICATION_CREDENTIALS` でその中を指す。イメージに資格情報が入って
-いないことは、次のコマンドで実際に確認できる。(6.2, 6.3)
+### イメージに資格情報が入っていないことの確認
+
+鍵も `.env` もイメージには入らない。実際に確かめられる。(6.2, 6.3)
 
     docker run --rm --entrypoint sh creature-ocr-server:0.1.0 -c \
       "find / -xdev -name '.env*' -print; ls -a /app"
@@ -206,6 +237,8 @@ SDK・セルグリッド・値チェックは全部こちら**。アプリ側に
 
 | 変数 | 既定 | 内容 |
 |---|---|---|
+| `GCLOUD_CONFIG_DIR` | `./secrets` | ホストの gcloud 設定ディレクトリ。compose が `/gcloud` に読み取り専用でマウントする |
+| `GOOGLE_CLOUD_QUOTA_PROJECT` | 空 | ユーザ ADC のクォータプロジェクト。`set-quota-project` の代わり |
 | `GOOGLE_CLOUD_PROJECT` | なし | モデルを提供するプロジェクト |
 | `GEMINI_LOCATION` | なし | Vertex のリージョン。`global` も有効 |
 | `GEMINI_MODEL` | なし | 既定のモデル ID |
