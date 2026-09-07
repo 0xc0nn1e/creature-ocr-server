@@ -1,0 +1,28 @@
+# The credential arrives at run time and never in the image: put the service
+# account key in secrets/, which is git-ignored and mounted read-only below,
+# and point GOOGLE_APPLICATION_CREDENTIALS at it from .env. (6.2, 6.3)
+services:
+  ocr:
+    build: .
+    image: creature-ocr-server:0.1.0
+    # Read on this machine at start-up, never copied into a layer. Not required,
+    # so the container starts without one and GET /v1/engines says what is
+    # missing rather than the container refusing to exist.
+    env_file:
+      - path: .env
+        required: false
+    ports:
+      # Bound to the loopback address on purpose. This server holds a cloud
+      # credential and spends money per request; publishing it on every
+      # interface should be a decision somebody makes, not a default they
+      # inherit. Set SERVER_API_KEY before widening it.
+      - "127.0.0.1:8000:8000"
+    volumes:
+      - ./secrets:/run/secrets:ro
+    # Nothing in this container writes. The upload parser is configured to keep
+    # a page in memory, and this is the second half of that: a page that
+    # somehow spilled would land in RAM and disappear with the container.
+    read_only: true
+    tmpfs:
+      - /tmp
+    restart: unless-stopped

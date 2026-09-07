@@ -1,0 +1,49 @@
+[build-system]
+requires = ["setuptools>=61"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "creature-ocr-server"
+version = "0.1.0"
+description = "OCR API for handwritten wildlife survey sheets"
+requires-python = ">=3.11"
+# The whole server: an HTTP framework, the server that runs it, and the
+# multipart parser FastAPI needs before it can accept an uploaded file at all.
+# Nothing else. The sheet definition, the cell grid and the value checks are
+# pure Python, and the desktop app does the cropping, so PyMuPDF - which the
+# sibling repository depends on - is deliberately absent here.
+dependencies = [
+    "fastapi>=0.115,<1",
+    "uvicorn[standard]>=0.30,<1",
+    "python-multipart>=0.0.9",
+]
+
+# Every OCR SDK is an extra, not a dependency, exactly as in the desktop
+# repository. The package and the whole test suite must install and pass on a
+# machine with no vendor SDK and no cloud account, because that is what keeps
+# the engine abstraction honest and what lets 4.1's comparison stay a
+# comparison. Each extra is named after the engine it enables, so
+# `engine=gemini` and `pip install -e ".[gemini]"` are the same word. (4.1, 6.5)
+#
+# The v1 container installs [gemini] only. documentai is declared so the extra
+# exists the day its engine module is written; installing it now would drag in
+# grpcio and protobuf for an engine this server does not yet implement.
+#
+# google-genai carries an upper bound where google-cloud-documentai does not:
+# it went 1.x to 2.x with breaking changes to client construction and to the
+# generation config, and it releases often, so an unbounded floor would let a
+# future major break the engine at install time on a machine nobody is watching.
+#
+# google-auth is named by both because engines/auth.py imports google.oauth2
+# directly to load a service account key (6.3). It arrives with either SDK
+# anyway, but what is imported is declared.
+[project.optional-dependencies]
+gemini = ["google-genai>=2.21,<3", "google-auth>=2.35"]
+documentai = ["google-cloud-documentai>=2.20", "google-auth>=2.35"]
+
+# Only what the tests need on top of the base install. httpx is what
+# fastapi.testclient.TestClient drives the app with; it opens no socket.
+test = ["httpx>=0.27"]
+
+[tool.setuptools.packages.find]
+where = ["src"]

@@ -1,0 +1,30 @@
+# Python
+__pycache__/
+*.py[cod]
+.venv/
+venv/
+*.egg-info/
+.pytest_cache/
+
+# Ignore all environment files (except the template).
+/.env*
+!/.env.example
+
+# Google service account key, mounted read-only into the container at run
+# time. Nothing under here is ever copied into an image or committed. (6.2, 6.3)
+/secrets/*
+!/secrets/.gitkeep
+
+# Survey-sheet artifacts. 6.2 / 7.3: cropped PNGs, engine responses and
+# anything read off a real sheet never enter git. This server writes none of
+# them, but a page dropped here while debugging must not be committed either.
+/output/
+/input/
+
+# macOS
+.DS_Store
+
+# IDE
+.idea/
+.vscode/
+

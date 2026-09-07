@@ -1,0 +1,32 @@
+# Nothing in here may reach a build context. The Dockerfile copies
+# pyproject.toml and src/ by name rather than copying the tree, so this is the
+# second of two defences rather than the only one. (6.2, 6.3)
+.env
+.env.*
+secrets/
+*.json.key
+*.pem
+
+.git
+.gitignore
+.dockerignore
+
+tests/
+output/
+input/
+README.zh-HK.md
+AGENT.md
+AGENTS.md
+CLAUDE.md
+
+# Docker's ignore patterns are not gitignore's: a bare `__pycache__/` matches
+# only a directory of that name at the top of the context, so the ones beside
+# every module need the `**` themselves. Without it the image ends up carrying
+# whichever Python version the developer last ran the tests with.
+**/__pycache__
+**/*.py[cod]
+**/*.egg-info
+.venv/
+venv/
+.idea/
+.vscode/
