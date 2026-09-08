@@ -12,7 +12,15 @@ import sys
 import unittest
 
 from creature_ocr_server import config
-from creature_ocr_server.grid import cell_at, cell_band, iter_cells
+from creature_ocr_server.grid import (
+    cell_at,
+    cell_at_v2,
+    cell_band,
+    cell_band_v2,
+    header_at_v2,
+    header_band_v2,
+    iter_cells,
+)
 
 FIELDS = [key for key, _ in config.OCR_FIELDS]
 
@@ -106,6 +114,78 @@ class IterCellsTest(unittest.TestCase):
         first_row = [field for row, field in iter_cells() if row == 1]
 
         self.assertEqual(first_row, FIELDS)
+
+
+class CompositeGridTest(unittest.TestCase):
+    """The v2 frame: the same table, addressed on a bigger canvas."""
+
+    def test_the_table_is_the_v1_table_scaled_by_the_canvas(self):
+        # The composite is the v1 crop pasted at (0, 0) and not resampled, so
+        # every fraction is the v1 fraction times one ratio per axis. Measured
+        # off .idea/rebuild_生き物_page01.png: the printed rules of both images
+        # sit at the same pixel.
+        down = config.V2_TABLE_PIXELS[1] / config.V2_CANVAS_PIXELS[1]
+        across = config.V2_TABLE_PIXELS[0] / config.V2_CANVAS_PIXELS[0]
+
+        for edge, moved in zip(config.CELL_ROW_EDGES, config.CELL_ROW_EDGES_V2):
+            self.assertAlmostEqual(moved, edge * down)
+        for field, (left, right) in config.CELL_COLUMNS.items():
+            self.assertAlmostEqual(config.CELL_COLUMNS_V2[field][0], left * across)
+            self.assertAlmostEqual(config.CELL_COLUMNS_V2[field][1], right * across)
+
+    def test_the_v1_frame_did_not_move(self):
+        # The one thing this whole version exists to leave alone: a v1 client's
+        # cache is keyed on a digest of these numbers.
+        self.assertEqual(config.CELL_ROW_EDGES[0], 0.0364)
+        self.assertEqual(config.CELL_ROW_EDGES[-1], 0.9764)
+        self.assertEqual(config.CELL_COLUMNS["bug_name"], (0.0704, 0.2424))
+
+    def test_the_centre_of_every_cell_finds_that_cell(self):
+        for row in range(1, config.ROWS_PER_PAGE + 1):
+            for field in FIELDS:
+                left, top, right, bottom = cell_band_v2(row, field)
+                found = cell_at_v2((left + right) / 2, (top + bottom) / 2)
+                self.assertEqual(found, (row, field))
+
+    def test_the_strip_belongs_to_no_cell(self):
+        for field in config.HEADER_BANDS_V2:
+            left, top, right, bottom = header_band_v2(field)
+            self.assertIsNone(cell_at_v2((left + right) / 2, (top + bottom) / 2))
+
+    def test_the_table_belongs_to_no_header_field(self):
+        for row in range(1, config.ROWS_PER_PAGE + 1):
+            left, top, right, bottom = cell_band_v2(row, "bug_name")
+            self.assertIsNone(header_at_v2((left + right) / 2, (top + bottom) / 2))
+
+
+class HeaderGridTest(unittest.TestCase):
+    """The strip: three boxes on one line, and the labels between them."""
+
+    def test_the_centre_of_every_band_finds_that_field(self):
+        for field in config.HEADER_BANDS_V2:
+            left, top, right, bottom = header_band_v2(field)
+            self.assertEqual(header_at_v2((left + right) / 2, (top + bottom) / 2), field)
+
+    def test_the_printed_labels_belong_to_no_field(self):
+        # A band that reached over its own label would hand a coordinate engine
+        # the label back as the answer. Measured label positions.
+        for left, right in ((0.1272, 0.1660), (0.2064, 0.2196), (0.2538, 0.2669)):
+            middle = (left + right) / 2
+            self.assertIsNone(header_at_v2(middle, 0.94))
+
+    def test_the_bands_do_not_overlap(self):
+        spans = sorted(
+            (left, right) for left, _, right, _ in config.HEADER_BANDS_V2.values()
+        )
+        for (_, ends), (starts, _) in zip(spans, spans[1:]):
+            self.assertLessEqual(ends, starts)
+
+    def test_a_point_above_the_strip_belongs_to_no_field(self):
+        self.assertIsNone(header_at_v2(0.05, 0.5))
+
+    def test_an_unknown_field_is_rejected(self):
+        with self.assertRaises(ValueError):
+            header_band_v2("name")
 
 
 class NoImageLibraryTest(unittest.TestCase):

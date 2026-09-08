@@ -31,7 +31,15 @@ import logging
 import os
 
 from .. import config
-from ..ocr import OCREngine, OCRError, Reading, TextBox, Usage, checks_fingerprint
+from ..ocr import (
+    OCREngine,
+    OCRError,
+    Reading,
+    TextBox,
+    Usage,
+    checks_fingerprint,
+    header_fingerprint,
+)
 from . import auth
 
 logger = logging.getLogger(__name__)
@@ -123,6 +131,7 @@ class DocumentAIEngine(OCREngine):
     def settings_for(
         cls,
         model: str = "",
+        sheet: str = config.SHEET_V1,
         project: str = "",
         location: str = "",
         processor_id: str = "",
@@ -153,14 +162,27 @@ class DocumentAIEngine(OCREngine):
         processor_id = processor_id or os.environ.get(
             config.DOCUMENTAI_ENV_PROCESSOR_ID, ""
         )
-        return (
+        # The sheet joins it for anything but v1, and only for anything but v1:
+        # the v1 string has to keep coming out exactly as it did, or every page
+        # a client has already filed under it is thrown away. This engine's boxes
+        # are measurements, so the frame they are read in is not part of its
+        # identity - but which image was sent is, and that is what the word says.
+        settings = (
             f"{project}/{location}/{processor_id} "
             f"hints={','.join(config.DOCUMENTAI_LANGUAGE_HINTS)} "
             f"checks={checks_fingerprint()}"
         )
+        if sheet == config.SHEET_V1:
+            return settings
+        return f"{settings}+{header_fingerprint()} sheet={sheet}"
 
     @classmethod
-    def cache_name_for(cls, model: str = "", processor_id: str = "") -> str:
+    def cache_name_for(
+        cls,
+        model: str = "",
+        sheet: str = config.SHEET_V1,
+        processor_id: str = "",
+    ) -> str:
         """The directory a client keeps this processor's readings under.
 
         The processor is the closest thing this engine has to a model, so it
@@ -170,13 +192,15 @@ class DocumentAIEngine(OCREngine):
         processor_id = processor_id or os.environ.get(
             config.DOCUMENTAI_ENV_PROCESSOR_ID, ""
         )
-        return f"{cls.name}-{processor_id}" if processor_id else cls.name
+        named = f"{cls.name}-{processor_id}" if processor_id else cls.name
+        return named if sheet == config.SHEET_V1 else f"{named}-{sheet}"
 
     def __init__(
         self,
         project: str | None = None,
         location: str | None = None,
         processor_id: str | None = None,
+        sheet: str = config.SHEET_V1,
     ) -> None:
         project = project or os.environ.get(config.DOCUMENTAI_ENV_PROJECT, "")
         location = location or os.environ.get(config.DOCUMENTAI_ENV_LOCATION, "")
@@ -222,8 +246,8 @@ class DocumentAIEngine(OCREngine):
         self._processor = self._client.processor_path(project, location, processor_id)
         # Worked out by the same functions GET /v1/engines answers with, so what
         # a client was told to key its cache on is what actually read the page.
-        self.settings = self.settings_for("", project, location, processor_id)
-        self.cache_name = self.cache_name_for("", processor_id)
+        self.settings = self.settings_for("", sheet, project, location, processor_id)
+        self.cache_name = self.cache_name_for("", sheet, processor_id)
         # enable_symbol asks for per-character boxes, which is what keeps a word
         # written across a printed rule from landing wholly in one cell. The
         # language hint stops the processor reading handwritten kana as Korean.

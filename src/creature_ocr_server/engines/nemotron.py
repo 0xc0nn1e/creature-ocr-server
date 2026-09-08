@@ -47,7 +47,15 @@ import urllib.error
 import urllib.request
 
 from .. import config
-from ..ocr import OCREngine, OCRError, Reading, TextBox, Usage, checks_fingerprint
+from ..ocr import (
+    OCREngine,
+    OCRError,
+    Reading,
+    TextBox,
+    Usage,
+    checks_fingerprint,
+    header_fingerprint,
+)
 from . import auth
 
 logger = logging.getLogger(__name__)
@@ -305,6 +313,7 @@ class NemotronEngine(OCREngine):
     def settings_for(
         cls,
         model: str = "",
+        sheet: str = config.SHEET_V1,
         variant: str | None = None,
         endpoint: str | None = None,
         max_bytes: int | None = None,
@@ -346,6 +355,11 @@ class NemotronEngine(OCREngine):
         )
         if max_bytes:
             settings += f" max_bytes={max_bytes}"
+        # Only ever added for a sheet that is not v1: the v1 string has to keep
+        # coming out exactly as it did, or every page a client has already filed
+        # under it is thrown away.
+        if sheet != config.SHEET_V1:
+            settings += f" sheet={sheet} header={header_fingerprint()}"
         return settings
 
     @classmethod
@@ -362,19 +376,23 @@ class NemotronEngine(OCREngine):
         )
 
     @classmethod
-    def cache_name_for(cls, model: str = "", variant: str = "") -> str:
+    def cache_name_for(
+        cls, model: str = "", sheet: str = config.SHEET_V1, variant: str = ""
+    ) -> str:
         """The directory a client keeps this variant's readings under.
 
         Pointing the server at the English build to compare the two then keeps
         both sets of readings instead of overwriting one. (3.2, 4.1)
         """
-        return f"{cls.name}-{variant or cls.default_variant()}"
+        named = f"{cls.name}-{variant or cls.default_variant()}"
+        return named if sheet == config.SHEET_V1 else f"{named}-{sheet}"
 
     def __init__(
         self,
         endpoint: str | None = None,
         variant: str | None = None,
         max_bytes: str | int | None = None,
+        sheet: str = config.SHEET_V1,
     ) -> None:
         endpoint = endpoint or os.environ.get(config.NEMOTRON_ENV_ENDPOINT, "")
         variant = variant or self.default_variant()
@@ -399,8 +417,10 @@ class NemotronEngine(OCREngine):
         self._key = auth.api_key(config.NEMOTRON_ENV_API_KEY)
         # Worked out by the same functions GET /v1/engines answers with, so what
         # a client was told to key its cache on is what actually read the page.
-        self.settings = self.settings_for("", variant, self._url, self._limit)
-        self.cache_name = self.cache_name_for("", variant)
+        self.settings = self.settings_for(
+            "", sheet, variant, self._url, self._limit
+        )
+        self.cache_name = self.cache_name_for("", sheet, variant)
 
     def recognize(self, image: bytes, mime_type: str = "image/png") -> Reading:
         notes: list[str] = []

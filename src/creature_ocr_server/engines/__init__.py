@@ -44,11 +44,17 @@ ENGINES: dict[str, type[OCREngine]] = {
     NemotronEngine.name: NemotronEngine,
 }
 
-# Built engines, keyed by (engine, model). Bounded by each engine's own model
-# allow-list and by nothing else, which is the second reason that list exists:
-# without it a caller could name any string and grow this dictionary an SDK
-# client at a time until the process ran out of memory.
-_BUILT: dict[tuple[str, str], OCREngine] = {}
+# Built engines, keyed by (engine, model, sheet). Bounded by each engine's own
+# model allow-list, by the two sheets config names, and by nothing else - which
+# is the second reason that allow-list exists: without it a caller could name any
+# string and grow this dictionary an SDK client at a time until the process ran
+# out of memory.
+#
+# The sheet is part of the key because it is part of what an engine is: the
+# prompt, the response schema and the frame all differ, and so does the settings
+# string a client keys its cache on. One engine per (model, sheet) keeps the
+# invariant that an engine holds nothing that changes between calls. (3.2, 4.2)
+_BUILT: dict[tuple[str, str, str], OCREngine] = {}
 
 # Held while an engine is built, so two cold requests for the same model do not
 # each construct a client and each pay for a token exchange. Not held while a
@@ -141,7 +147,26 @@ def choose_model(name: str, model: str | None = None) -> str:
     return model
 
 
-def build_engine(name: str | None = None, model: str | None = None) -> OCREngine:
+def choose_sheet(sheet: str | None = None) -> str:
+    """The sheet this request is about, or a ValueError naming the two there are.
+
+    A separate function for the same reason resolve() is one: which paper a
+    request means is decided in one place, so /v1/ocr and /v2/ocr cannot come to
+    disagree about what the word means.
+    """
+    chosen = sheet or config.SHEET_V1
+    if chosen not in config.SHEETS:
+        raise ValueError(
+            f"unknown sheet {chosen!r}: expected one of {', '.join(config.SHEETS)}"
+        )
+    return chosen
+
+
+def build_engine(
+    name: str | None = None,
+    model: str | None = None,
+    sheet: str | None = None,
+) -> OCREngine:
     """Build one engine. The model is an argument, never an environment write.
 
     The desktop pipeline sets GEMINI_MODEL and lets the constructor read it
@@ -155,11 +180,25 @@ def build_engine(name: str | None = None, model: str | None = None) -> OCREngine
     """
     chosen = resolve(name)
     wanted = choose_model(chosen, model)
+    paper = choose_sheet(sheet)
     engine = ENGINES[chosen]
-    return engine(model=wanted) if wanted else engine()
+    arguments = {}
+    if wanted:
+        arguments["model"] = wanted
+    # The sheet is passed only when it is not v1, so a v1 engine is built by
+    # exactly the call that always built it. An engine written before there was
+    # a second sheet therefore keeps serving the first one untouched, and only a
+    # v2 request reaches it with a word it does not know.
+    if paper != config.SHEET_V1:
+        arguments["sheet"] = paper
+    return engine(**arguments)
 
 
-def shared(name: str | None = None, model: str | None = None) -> OCREngine:
+def shared(
+    name: str | None = None,
+    model: str | None = None,
+    sheet: str | None = None,
+) -> OCREngine:
     """The engine for this name and model, built once and kept.
 
     Per-request construction would also work, and is the escape hatch if this
@@ -171,7 +210,8 @@ def shared(name: str | None = None, model: str | None = None) -> OCREngine:
     """
     chosen = resolve(name)
     wanted = choose_model(chosen, model)
-    key = (chosen, wanted)
+    paper = choose_sheet(sheet)
+    key = (chosen, wanted, paper)
     found = _BUILT.get(key)
     if found is not None:
         return found
@@ -180,7 +220,7 @@ def shared(name: str | None = None, model: str | None = None) -> OCREngine:
         # both arrive here, and only one of them should build a client.
         found = _BUILT.get(key)
         if found is None:
-            found = build_engine(chosen, wanted or None)
+            found = build_engine(chosen, wanted or None, paper)
             _BUILT[key] = found
         return found
 

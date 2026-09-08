@@ -341,6 +341,78 @@ CELL_COLUMNS = {
 }
 
 
+# The v2 sheet: the same table, plus the strip the crop above throws away.
+#
+# 小学校, 年 and 組 sit in the printed header band, on the same line as 名前 and
+# 自宅住所. A taller crop would carry the personal information with them, so the
+# client cuts the left half of that band out and pastes it below the table. What
+# /v2/ocr is sent is that composite; /v1/ocr keeps taking the crop it always did.
+#
+# The table inside the composite is the v1 crop pasted at (0, 0), not resampled:
+# every printed rule of .idea/rebuild_生き物_page01.png sits at the same pixel as
+# in demo/page01.png, horizontal and vertical alike. So the v2 fractions are the
+# v1 fractions times one ratio per axis, and are derived rather than transcribed
+# - a re-measured v1 grid moves v2 with it, and neither can be mistyped.
+#
+# The pixel sizes are the contract with the client. They are written down rather
+# than left implicit because a composite built to another size reads every value
+# out of the wrong cell, and nothing on this side can see that it happened.
+# Which sheet a request is asking about. The word is part of an engine's cache
+# identity, so it is named once here rather than spelled out in three modules.
+SHEET_V1 = "v1"
+SHEET_V2 = "v2"
+SHEETS = (SHEET_V1, SHEET_V2)
+
+V2_TABLE_PIXELS = (3367, 1442)
+V2_CANVAS_PIXELS = (3507, 1620)
+
+CELL_ROW_EDGES_V2 = tuple(
+    edge * V2_TABLE_PIXELS[1] / V2_CANVAS_PIXELS[1] for edge in CELL_ROW_EDGES
+)
+
+CELL_COLUMNS_V2 = {
+    field: (
+        left * V2_TABLE_PIXELS[0] / V2_CANVAS_PIXELS[0],
+        right * V2_TABLE_PIXELS[0] / V2_CANVAS_PIXELS[0],
+    )
+    for field, (left, right) in CELL_COLUMNS.items()
+}
+
+# The three values the strip carries. One per sheet, not one per row, which is
+# why they are not in OCR_FIELDS: putting them there would write the school name
+# into all eight rows and change what sheet_definition hashes, and a v1 client's
+# whole cache would go with it.
+HEADER_FIELDS = (
+    ("school", "小学校"),
+    ("grade", "年"),
+    ("school_class", "組"),
+)
+
+# The two of the three whose whole answer is a number. A child writes one digit
+# before 年 and one before 組; 小学校 is a name and is checked as free writing
+# against the same script whitelist every other written field uses.
+HEADER_DIGIT_FIELDS = ("grade", "school_class")
+
+# Where each of the three is written, as fractions of the composite. Measured off
+# .idea/rebuild_生き物_page01.png.
+#
+# The bands stop short of the printed labels on purpose. 小学校/学園 occupies
+# 0.1272-0.1660 of the strip, 年 sits at 0.2064-0.2196 and 組 at 0.2538-0.2669,
+# and a child writes to the left of each; a band that reached over a label would
+# hand a coordinate engine the label back as the answer.
+#
+# 年 and 組 share one printed compartment with no rule between them, so the edge
+# at 0.2196 is the right-hand edge of the 年 label rather than a line on the
+# paper. It is the one v2 coordinate that is a judgement rather than a
+# measurement. Gemini is unaffected - it is told what the fields are - but a
+# coordinate engine reads the split as given.
+HEADER_BANDS_V2 = {
+    "school": (0.0034, 0.8963, 0.1272, 0.9963),
+    "grade": (0.1699, 0.8963, 0.2064, 0.9963),
+    "school_class": (0.2196, 0.8963, 0.2538, 0.9963),
+}
+
+
 # Document AI, using a Document OCR processor. Only the key names are here; the
 # values arrive from the real environment, which in a container means compose's
 # env_file or the orchestrator, never a file baked into the image. Nothing about
@@ -576,4 +648,24 @@ def sheet_definition() -> dict:
             }
             for letter_field, wording_field, table in OCR_PAIRED_FIELDS
         ],
+    }
+
+
+def header_definition() -> dict:
+    """The strip the v2 sheet adds, as plain JSON-able data.
+
+    Kept apart from sheet_definition rather than folded into it, and that
+    separation is the whole reason a v1 client notices nothing. checks_fingerprint
+    hashes sheet_definition, and an engine's settings string carries that hash,
+    which is what a client keys its cache on. Adding three fields there would have
+    changed the settings of every v1 model and thrown away every page any client
+    had already paid to read.
+
+    Only what a check reads, same rule as sheet_definition. The bands are not in
+    it: where the writing sits is this server's business, and the grid already has
+    a fingerprint of its own inside an engine's settings. (3.2, 4.2)
+    """
+    return {
+        "fields": [{"key": key, "header": header} for key, header in HEADER_FIELDS],
+        "digit_fields": list(HEADER_DIGIT_FIELDS),
     }

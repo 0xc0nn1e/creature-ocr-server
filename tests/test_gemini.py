@@ -22,14 +22,25 @@ from creature_ocr_server import config, engines
 from creature_ocr_server.engines.gemini import (
     GeminiEngine,
     build_prompt,
+    build_prompt_v2,
     grid_fingerprint,
+    parse_page_v2,
     parse_rows,
     prompt_fingerprint,
     response_schema,
+    response_schema_v2,
     text_boxes,
+    text_boxes_v2,
     tokens,
 )
-from creature_ocr_server.ocr import OCRError, Usage, assign_to_cells
+from creature_ocr_server.grid import cell_at_v2, header_at_v2
+from creature_ocr_server.ocr import (
+    OCRError,
+    Usage,
+    assign_to_cells,
+    assign_to_header,
+    checks_fingerprint,
+)
 
 PAGE = b"a whole page of PNG"
 
@@ -929,3 +940,95 @@ class SharedEngineTest(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class CompositeSheetTest(unittest.TestCase):
+    """The v2 sheet: the same table, plus the strip below it."""
+
+    def test_the_schema_asks_for_the_strip_beside_the_rows_not_inside_them(self):
+        schema = response_schema_v2()
+
+        self.assertEqual(schema["type"], "object")
+        for field, _ in config.HEADER_FIELDS:
+            self.assertEqual(schema["properties"][field], {"type": "string"})
+            self.assertNotIn(field, schema["properties"]["rows"]["items"]["properties"])
+
+    def test_the_rows_half_is_the_v1_schema_unchanged(self):
+        self.assertEqual(response_schema_v2()["properties"]["rows"], response_schema())
+
+    def test_only_the_rows_are_required(self):
+        # A strip nobody filled in has to be able to come back empty rather than
+        # invented, the same rule 5.2-1 sets for a blank cell.
+        self.assertEqual(response_schema_v2()["required"], ["rows"])
+
+    def test_the_prompt_is_the_v1_prompt_and_then_the_strip(self):
+        self.assertTrue(build_prompt_v2().startswith(build_prompt()))
+        for _, header in config.HEADER_FIELDS:
+            self.assertIn(header, build_prompt_v2())
+
+    def test_the_prompt_says_a_label_is_never_the_answer(self):
+        # The one mistake the strip invites: 年 is printed beside the box, not
+        # written in it.
+        self.assertIn("the label", build_prompt_v2())
+
+    def test_a_page_round_trips_into_the_fields_it_was_asked_for(self):
+        boxes, notes = text_boxes_v2(
+            {
+                "school": "芝",
+                "grade": "4",
+                "school_class": "2",
+                "rows": [{"no": 1, "bug_name": "カナブン"}],
+            }
+        )
+
+        self.assertEqual(notes, [f"the page came back without row(s) {list(range(2, 9))}"])
+        self.assertEqual(
+            assign_to_header(boxes, header_at_v2),
+            {"school": "芝", "grade": "4", "school_class": "2"},
+        )
+        placed = assign_to_cells(boxes, cell_at_v2)
+        self.assertEqual(placed[(1, "bug_name")], "カナブン")
+
+    def test_an_empty_strip_produces_no_boxes_for_it(self):
+        boxes, _ = text_boxes_v2({"school": "", "rows": []})
+
+        self.assertEqual(assign_to_header(boxes, header_at_v2)["school"], "")
+
+    def test_a_bare_array_is_read_as_a_page_with_no_strip(self):
+        # A model that ignored the object wrapper still gives up its eight rows
+        # rather than costing the whole page.
+        found = parse_page_v2(SimpleNamespace(text='[{"no": 1}]'))
+
+        self.assertEqual(found, {"rows": [{"no": 1}]})
+
+    def test_a_page_that_is_not_an_object_raises(self):
+        with self.assertRaises(OCRError):
+            parse_page_v2(SimpleNamespace(text='"a string"'))
+
+    def test_a_response_with_no_rows_raises(self):
+        with self.assertRaises(OCRError):
+            text_boxes_v2({"school": "芝"})
+
+    def test_the_two_sheets_are_cached_under_different_names(self):
+        self.assertNotEqual(
+            GeminiEngine.settings_for("gemini-3.7-flash"),
+            GeminiEngine.settings_for("gemini-3.7-flash", sheet=config.SHEET_V2),
+        )
+        self.assertNotEqual(
+            GeminiEngine.cache_name_for("gemini-3.7-flash"),
+            GeminiEngine.cache_name_for("gemini-3.7-flash", sheet=config.SHEET_V2),
+        )
+
+    def test_v1_settings_are_spelled_exactly_as_they_always_were(self):
+        # Every page a client has already paid to read is filed under this
+        # string. It must not gain so much as a word.
+        self.assertEqual(
+            GeminiEngine.settings_for("gemini-3.7-flash"),
+            f"gemini-3.7-flash temperature=0.0 top_p=0.1 "
+            f"grid={grid_fingerprint()} prompt={prompt_fingerprint()} "
+            f"checks={checks_fingerprint()}",
+        )
+
+    def test_an_unknown_sheet_is_refused(self):
+        with self.assertRaises(ValueError):
+            GeminiEngine(project="p", location="l", model="m", sheet="v3")

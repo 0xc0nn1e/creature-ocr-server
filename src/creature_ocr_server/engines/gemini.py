@@ -44,7 +44,7 @@ import string
 from collections.abc import Iterable
 
 from .. import config
-from ..grid import Cell, cell_band, iter_cells
+from ..grid import Cell, cell_band, cell_band_v2, header_band_v2, iter_cells
 from ..ocr import (
     OCREngine,
     OCRError,
@@ -52,6 +52,7 @@ from ..ocr import (
     TextBox,
     Usage,
     checks_fingerprint,
+    header_fingerprint,
 )
 from . import auth
 
@@ -118,6 +119,30 @@ def response_schema() -> dict:
     }
 
 
+def response_schema_v2() -> dict:
+    """The JSON shape a v2 page comes back in.
+
+    An object rather than the bare array v1 returns, because the strip's three
+    values belong to the sheet and not to any row. Putting them in every row
+    instead would have asked the model for the same answer eight times and made
+    seven of them disagreements waiting to happen.
+
+    `rows` is v1's array unchanged, so the table half of a v2 answer is parsed by
+    exactly the code that parses a v1 one.
+    """
+    return {
+        "type": "object",
+        "properties": {
+            **{key: {"type": "string"} for key, _ in config.HEADER_FIELDS},
+            "rows": response_schema(),
+        },
+        # Same reasoning as v1's `required`: a strip nobody filled in must be
+        # able to come back empty rather than invented.
+        "required": ["rows"],
+        "propertyOrdering": [key for key, _ in config.HEADER_FIELDS] + ["rows"],
+    }
+
+
 def grid_fingerprint() -> str:
     """A short digest of the cell grid this engine addresses its boxes in.
 
@@ -156,6 +181,29 @@ def prompt_fingerprint() -> str:
     Document AI needs nothing of the kind: it takes no instructions at all.
     """
     return hashlib.sha256(build_prompt().encode()).hexdigest()[:8]
+
+
+def grid_fingerprint_v2() -> str:
+    """The same digest for the composite frame, plus where the strip sits.
+
+    Separate from grid_fingerprint rather than replacing it. The v1 digest has to
+    keep coming out d103bef3 or every page any client has cached under it is
+    thrown away, and none of those pages became wrong when v2 was added.
+    """
+    layout = repr(
+        (
+            config.ROWS_PER_PAGE,
+            config.CELL_ROW_EDGES_V2,
+            tuple(config.CELL_COLUMNS_V2.items()),
+            tuple(sorted(config.HEADER_BANDS_V2.items())),
+        )
+    )
+    return hashlib.sha256(layout.encode()).hexdigest()[:8]
+
+
+def prompt_fingerprint_v2() -> str:
+    """The same digest for the instructions a v2 page is read under."""
+    return hashlib.sha256(build_prompt_v2().encode()).hexdigest()[:8]
 
 
 def _character_rule(field: str, allowed: str) -> str:
@@ -337,6 +385,45 @@ trouble, so listing every column says nothing at all.
 """
 
 
+def build_prompt_v2() -> str:
+    """The v2 instructions: the whole v1 prompt, plus the strip below the table.
+
+    Built by appending to build_prompt() rather than by writing a second prompt,
+    so the eleven columns can never be described two ways. Everything the v1
+    prompt says about the table still applies word for word, which is what makes
+    a v2 reading of the table comparable with a v1 one.
+
+    5.2-5 wanted the header band and the data band sent as separate images. This
+    is that, arrived at from the other end: the client cuts the left half of the
+    header band out - the half without 名前 and 自宅住所 on it - and pastes it
+    below the table, so one call reads both without the page ever carrying
+    personal information. (5.2-5, 6.2)
+    """
+    labels = "\n".join(
+        f"- {key}: the number or name written before the printed {header}"
+        for key, header in config.HEADER_FIELDS
+    )
+    digits = ", ".join(config.HEADER_DIGIT_FIELDS)
+    return build_prompt() + f"""
+Below the table, separated from it by white space, is a short strip cut from the
+printed header of the same sheet. It holds three values that belong to the whole
+page rather than to any row:
+{labels}
+
+Return them alongside `rows`, not inside any row.
+
+The child writes each answer to the left of the printed label, so the label
+itself is never the answer: 年 is not a value, and neither is 組 or 小学校. If a
+box is blank, return an empty string for it.
+
+{digits} are whole numbers, digits only. Return an empty string rather than a
+word, a range, or a number with anything else attached to it.
+
+The strip is often left blank. An empty strip is three empty strings, and it
+changes nothing about the {config.ROWS_PER_PAGE} rows you return above.
+"""
+
+
 def _row_number(entry: dict, position: int, notes: list[str]) -> int | None:
     """Which printed row this object is, or None if it does not say.
 
@@ -457,6 +544,43 @@ def text_boxes(rows: Iterable[object]) -> tuple[list[TextBox], list[str]]:
     return boxes, notes
 
 
+def text_boxes_v2(page: dict) -> tuple[list[TextBox], list[str]]:
+    """Turn a v2 response into positioned text in the composite frame.
+
+    The table half is text_boxes' work done again against cell_band_v2, and the
+    strip half is three more boxes at the bands the strip's values were asked
+    for. Same principle throughout: a box here is the address a value was asked
+    for, never a measurement, so what comes back round-trips into exactly the
+    field it came from.
+
+    A header value the model did not send, or sent empty, produces no box at all
+    - the same silence a blank cell produces - so nothing downstream has to tell
+    an empty answer from a missing one.
+    """
+    rows = page.get("rows")
+    if not isinstance(rows, list):
+        raise OCRError("Gemini returned no list of rows")
+    boxes, notes = _by_cell_boxes_v2(rows)
+    for field, _ in config.HEADER_FIELDS:
+        value = page.get(field)
+        text = "" if value is None else str(value).strip()
+        if text:
+            boxes.append(TextBox(text, *header_band_v2(field)))
+    return boxes, notes
+
+
+def _by_cell_boxes_v2(rows: Iterable[object]) -> tuple[list[TextBox], list[str]]:
+    """The table half of a v2 response, addressed in the composite frame."""
+    notes: list[str] = []
+    values, unsure = _by_cell(rows, notes)
+    boxes = []
+    for cell in iter_cells():
+        text = values.get(cell)
+        if text:
+            boxes.append(TextBox(text, *cell_band_v2(*cell), unsure=cell in unsure))
+    return boxes, notes
+
+
 def _finish_reason(response) -> str:
     """Why a response carried no text: a safety block, or the token budget."""
     reasons = [
@@ -513,6 +637,28 @@ def parse_rows(response) -> list:
     return found
 
 
+def parse_page_v2(response) -> dict:
+    """Read a whole v2 page - the strip and the rows - out of a response.
+
+    Same failures as parse_rows and for the same reason: a page that did not
+    arrive is 6.4's retry, not a row to drop. A bare array is accepted as a page
+    with an empty strip, so a model that ignored the object wrapper still gives
+    up its eight rows instead of costing the whole page.
+    """
+    text = getattr(response, "text", None)
+    if not text:
+        raise OCRError(f"Gemini returned no text ({_finish_reason(response)})")
+    try:
+        found = json.loads(text)
+    except ValueError as exc:
+        raise OCRError(f"Gemini returned something that is not JSON: {exc}") from exc
+    if isinstance(found, list):
+        return {"rows": found}
+    if not isinstance(found, dict):
+        raise OCRError("Gemini returned no page object")
+    return found
+
+
 class GeminiEngine(OCREngine):
     """One structured-extraction call per page."""
 
@@ -557,14 +703,20 @@ class GeminiEngine(OCREngine):
         return os.environ.get(config.GEMINI_ENV_MODEL, "").strip()
 
     @classmethod
-    def cache_name_for(cls, model: str) -> str:
+    def cache_name_for(cls, model: str, sheet: str = config.SHEET_V1) -> str:
         """The directory a client keeps this model's readings under. (3.2, 4.1)"""
-        return model
+        return model if sheet == config.SHEET_V1 else f"{model}-{sheet}"
+
+    # An engine is built per sheet as well as per model. The prompt, the schema
+    # and the frame all differ between the two, and so must the settings string:
+    # a client that keyed both readings of a page under one name would serve one
+    # of them for the other. The words themselves are config.SHEETS. (3.2, 4.2)
 
     @classmethod
     def settings_for(
         cls,
         model: str,
+        sheet: str = config.SHEET_V1,
         temperature: float = config.GEMINI_TEMPERATURE,
         top_p: float = config.GEMINI_TOP_P,
     ) -> str:
@@ -594,10 +746,19 @@ class GeminiEngine(OCREngine):
 
         (3.2, 4.2, 5.2-4, 7.2)
         """
+        # v1 is spelled exactly as it always was, down to the absence of a
+        # sheet word. Any change here - even one that added information - would
+        # invalidate every page a client has already paid to read.
+        if sheet == config.SHEET_V1:
+            return (
+                f"{model} temperature={temperature} top_p={top_p} "
+                f"grid={grid_fingerprint()} prompt={prompt_fingerprint()} "
+                f"checks={checks_fingerprint()}"
+            )
         return (
-            f"{model} temperature={temperature} top_p={top_p} "
-            f"grid={grid_fingerprint()} prompt={prompt_fingerprint()} "
-            f"checks={checks_fingerprint()}"
+            f"{model} sheet=v2 temperature={temperature} top_p={top_p} "
+            f"grid={grid_fingerprint_v2()} prompt={prompt_fingerprint_v2()} "
+            f"checks={checks_fingerprint()}+{header_fingerprint()}"
         )
 
     def __init__(
@@ -607,7 +768,14 @@ class GeminiEngine(OCREngine):
         model: str | None = None,
         temperature: float = config.GEMINI_TEMPERATURE,
         top_p: float = config.GEMINI_TOP_P,
+        sheet: str = config.SHEET_V1,
     ) -> None:
+        if sheet not in config.SHEETS:
+            raise ValueError(
+                f"unknown sheet {sheet!r}: expected one of "
+                f"{', '.join(config.SHEETS)}"
+            )
+        self._sheet = sheet
         project = project or os.environ.get(config.GEMINI_ENV_PROJECT, "")
         location = location or os.environ.get(config.GEMINI_ENV_LOCATION, "")
         model = model or os.environ.get(config.GEMINI_ENV_MODEL, "")
@@ -643,11 +811,14 @@ class GeminiEngine(OCREngine):
         self._model = model
         # Worked out by the same function GET /v1/engines answers with, so what
         # a client was told to key its cache on is what actually read the page.
-        self.settings = self.settings_for(model, temperature, top_p)
+        self.settings = self.settings_for(model, sheet, temperature, top_p)
         # The model names the cache directory a client keeps, so the comparison
         # 4.1 asks for is paid for once: switching models keeps what the
         # previous one read instead of overwriting it. (3.2, 4.1)
-        self.cache_name = model
+        # The sheet joins the directory name for the same reason it joins the
+        # settings: the two readings of one page are different readings, and a
+        # client keeping them under one name would overwrite one with the other.
+        self.cache_name = model if sheet == config.SHEET_V1 else f"{model}-{sheet}"
         # Credentials are asked for after the SDK loaded, so a machine with no
         # SDK at all is told to install the extra rather than told about a key.
         # None is the SDK's own default and means Application Default
@@ -661,10 +832,11 @@ class GeminiEngine(OCREngine):
         # Built once, and shared by every request this engine serves. No output
         # token limit: a model that thinks spends that budget on thinking and
         # then returns nothing at all, which looks exactly like a refusal.
+        v1 = sheet == config.SHEET_V1
         self._config = types.GenerateContentConfig(
-            system_instruction=build_prompt(),
+            system_instruction=build_prompt() if v1 else build_prompt_v2(),
             response_mime_type="application/json",
-            response_schema=response_schema(),
+            response_schema=response_schema() if v1 else response_schema_v2(),
             temperature=temperature,
             top_p=top_p,
         )
@@ -685,9 +857,11 @@ class GeminiEngine(OCREngine):
         # hiding that would understate the run. (6.1, 7.1)
         spent = tokens(response)
         try:
-            rows = parse_rows(response)
+            if self._sheet == config.SHEET_V1:
+                boxes, notes = text_boxes(parse_rows(response))
+            else:
+                boxes, notes = text_boxes_v2(parse_page_v2(response))
         except OCRError as exc:
             exc.usage = spent
             raise
-        boxes, notes = text_boxes(rows)
         return Reading(boxes, spent, notes)

@@ -12,12 +12,12 @@ from unittest.mock import patch
 
 from fastapi.testclient import TestClient
 
-from creature_ocr_server import config, engines, ocr
+from creature_ocr_server import config, engines, grid, ocr
 from creature_ocr_server.api import security
 from creature_ocr_server.api.app import app
 from creature_ocr_server.ocr import OCREngine, OCRError, OCRTimeout, Reading, Usage
 
-from test_ocr import FIELDS, box, filled_row
+from test_ocr import FIELDS, box, filled_row  # noqa: F401
 
 PNG = config.PNG_MAGIC + b"a page that says it is a PNG"
 
@@ -31,10 +31,11 @@ class FakeEngine(OCREngine):
     cost = Usage(calls=0, prompt_tokens=11, output_tokens=22, thought_tokens=3)
     notes = ()
 
-    def __init__(self, model=None):
+    def __init__(self, model=None, sheet=config.SHEET_V1):
         self.model = model or "fake-1"
-        self.settings = f"fake {self.model} checks={ocr.checks_fingerprint()}"
-        self.cache_name = self.model
+        self.sheet = sheet
+        self.settings = self.settings_for(self.model, sheet)
+        self.cache_name = self.cache_name_for(self.model, sheet)
 
     @classmethod
     def models(cls):
@@ -45,12 +46,13 @@ class FakeEngine(OCREngine):
         return "fake-1"
 
     @classmethod
-    def settings_for(cls, model):
-        return f"fake {model} checks={ocr.checks_fingerprint()}"
+    def settings_for(cls, model, sheet=config.SHEET_V1):
+        settings = f"fake {model} checks={ocr.checks_fingerprint()}"
+        return settings if sheet == config.SHEET_V1 else f"{settings} sheet={sheet}"
 
     @classmethod
-    def cache_name_for(cls, model):
-        return model
+    def cache_name_for(cls, model, sheet=config.SHEET_V1):
+        return model if sheet == config.SHEET_V1 else f"{model}-{sheet}"
 
     def recognize(self, image, mime_type="image/png"):
         if type(self).error is not None:
@@ -167,8 +169,12 @@ class EnginesTest(ApiTestCase):
         registry = answering(
             models=classmethod(lambda cls: ()),
             default_model=classmethod(lambda cls: ""),
-            settings_for=classmethod(lambda cls, model: "processor-7 checks=abc"),
-            cache_name_for=classmethod(lambda cls, model: "fake-processor-7"),
+            settings_for=classmethod(
+                lambda cls, model, sheet=config.SHEET_V1: "processor-7 checks=abc"
+            ),
+            cache_name_for=classmethod(
+                lambda cls, model, sheet=config.SHEET_V1: "fake-processor-7"
+            ),
         )
         found = self.client(registry).get("/v1/engines").json()[0]
 
@@ -641,3 +647,174 @@ class SharedEngineTest(ApiTestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+def header_box(field, text):
+    """A TextBox sitting in one of the strip's three boxes."""
+    left, top, right, bottom = grid.header_band_v2(field)
+    return ocr.TextBox(text, left, top, right, bottom)
+
+
+def v2_box(row, field, text):
+    """A TextBox sitting in one cell of the composite frame."""
+    return ocr.TextBox(text, *grid.cell_band_v2(row, field))
+
+
+class ReadCompositePageTest(ApiTestCase):
+    """POST /v2/ocr: the table, and the strip the v1 crop throws away."""
+
+    def test_the_strip_comes_back_as_three_top_level_fields(self):
+        registry = answering(
+            boxes=[
+                header_box("school", "芝"),
+                header_box("grade", "4"),
+                header_box("school_class", "2"),
+            ]
+        )
+        found = self.client(registry).post(
+            "/v2/ocr",
+            files={"image": ("page01.png", PNG, "image/png")},
+        )
+
+        self.assertEqual(found.status_code, 200)
+        body = found.json()
+        self.assertEqual(body["school"], "芝")
+        self.assertEqual(body["grade"], "4")
+        self.assertEqual(body["school_class"], "2")
+
+    def test_a_blank_strip_is_three_empty_strings_and_eight_rows(self):
+        found = self.client().post(
+            "/v2/ocr",
+            files={"image": ("page01.png", PNG, "image/png")},
+        )
+
+        body = found.json()
+        self.assertEqual(body["school"], "")
+        self.assertEqual(body["grade"], "")
+        self.assertEqual(body["school_class"], "")
+        self.assertEqual(len(body["rows"]), config.ROWS_PER_PAGE)
+
+    def test_a_year_that_is_not_a_number_is_refused_rather_than_repaired(self):
+        # 5.2-2: unreadable is an empty string, never the nearest thing that fits.
+        registry = answering(boxes=[header_box("grade", "よん")])
+        body = self.client(registry).post(
+            "/v2/ocr",
+            files={"image": ("page01.png", PNG, "image/png")},
+        ).json()
+
+        self.assertEqual(body["grade"], "")
+        self.assertTrue(any("grade" in finding for finding in body["findings"]))
+
+    def test_the_table_is_read_in_the_composite_frame(self):
+        registry = answering(boxes=[v2_box(1, "bug_name", "カナブン")])
+        body = self.client(registry).post(
+            "/v2/ocr",
+            files={"image": ("page01.png", PNG, "image/png")},
+        ).json()
+
+        self.assertEqual(body["rows"][0]["bug_name"], "カナブン")
+
+    def test_a_v1_box_in_the_last_row_falls_outside_the_composite_table(self):
+        # The two frames share an origin and diverge toward the far edges, so a
+        # box near the top left lands in the same cell in both and one near the
+        # bottom does not. Worth knowing rather than worth hiding: a composite
+        # built to the wrong size reads the first rows correctly and the last
+        # ones into nothing, which is the hardest shape of wrong to notice.
+        registry = answering(boxes=[box(config.ROWS_PER_PAGE, "notice", "ストロー")])
+        body = self.client(registry).post(
+            "/v2/ocr",
+            files={"image": ("page01.png", PNG, "image/png")},
+        ).json()
+
+        self.assertEqual(body["rows"][-1]["notice"], "")
+
+    def test_it_refuses_what_v1_refuses(self):
+        client = self.client()
+
+        self.assertEqual(
+            client.post(
+                "/v2/ocr", files={"image": ("p.png", b"not a png", "image/png")}
+            ).status_code,
+            415,
+        )
+
+
+class VersionsAreSeparateTest(ApiTestCase):
+    """The two sheets must never share a cache entry, or an answer."""
+
+    def test_the_settings_differ_between_the_versions(self):
+        client = self.client()
+
+        v1 = client.get("/v1/engines").json()[0]["models"][0]
+        v2 = client.get("/v2/engines").json()[0]["models"][0]
+
+        self.assertNotEqual(v1["settings"], v2["settings"])
+        self.assertNotEqual(v1["cache_name"], v2["cache_name"])
+
+    def test_v1_engines_says_exactly_what_it_always_said(self):
+        found = self.client().get("/v1/engines").json()[0]["models"][0]
+
+        self.assertEqual(found["settings"], FakeEngine.settings_for("fake-1"))
+        self.assertEqual(found["cache_name"], "fake-1")
+
+    def test_v2_sheet_carries_the_same_table_fingerprint_as_v1(self):
+        client = self.client()
+
+        v1 = client.get("/v1/sheet").json()
+        v2 = client.get("/v2/sheet").json()
+
+        self.assertEqual(v1["fingerprint"], v2["fingerprint"])
+        self.assertEqual(v1["sheet"], v2["sheet"])
+        self.assertEqual(v2["header"], config.header_definition())
+        self.assertEqual(v2["header_fingerprint"], ocr.header_fingerprint())
+
+    def test_the_v1_page_shape_has_no_strip_in_it(self):
+        body = self.read(self.client()).json()
+
+        self.assertNotIn("school", body)
+        self.assertNotIn("grade", body)
+        self.assertNotIn("school_class", body)
+
+    def test_v2_needs_the_key_too(self):
+        client = self.client(environment={config.SERVER_ENV_API_KEY: "secret"})
+
+        self.assertEqual(
+            client.post(
+                "/v2/ocr", files={"image": ("p.png", PNG, "image/png")}
+            ).status_code,
+            401,
+        )
+        self.assertEqual(client.get("/v2/engines").status_code, 401)
+        self.assertEqual(client.get("/v2/sheet").status_code, 401)
+
+
+class SheetIsTheSecondArgumentTest(unittest.TestCase):
+    """Every engine must take the sheet where the ABC says it does.
+
+    The routes pass it positionally, so an engine that put its own settings
+    between the model and the sheet would silently receive the word "v2" as a
+    temperature and publish a v1 key for a v2 page. That happened once; a unit
+    test calling by keyword could not see it, and this is what would have.
+    """
+
+    def test_every_engine_reads_the_sheet_where_the_abc_puts_it(self):
+        for name, engine in engines.ENGINES.items():
+            with self.subTest(engine=name):
+                model = (engine.models() or ("",))[0]
+                v1 = engine.settings_for(model, config.SHEET_V1)
+                v2 = engine.settings_for(model, config.SHEET_V2)
+
+                self.assertNotEqual(v1, v2)
+                self.assertIn(config.SHEET_V2, v2)
+                self.assertNotIn(f"temperature={config.SHEET_V1}", v1)
+                self.assertNotIn(f"temperature={config.SHEET_V2}", v2)
+
+    def test_every_engine_names_a_different_cache_directory_per_sheet(self):
+        for name, engine in engines.ENGINES.items():
+            with self.subTest(engine=name):
+                model = (engine.models() or ("",))[0]
+
+                self.assertNotEqual(
+                    engine.cache_name_for(model, config.SHEET_V1),
+                    engine.cache_name_for(model, config.SHEET_V2),
+                )

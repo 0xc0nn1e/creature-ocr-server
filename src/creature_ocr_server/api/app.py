@@ -1,10 +1,18 @@
 """The endpoints.
 
-Four of them, and only one costs anything. /v1/health touches no engine so a
+Seven, and two of them cost anything. /v1/health touches no engine so a
 container healthcheck cannot kill a process in the middle of a four-minute
-page. /v1/engines and /v1/sheet are pure reads of configuration, which is what
-lets a client arrive with nothing configured and find out what it can ask for.
-/v1/ocr is the one that spends money.
+page. /v1/engines, /v1/sheet and their v2 twins are pure reads of configuration,
+which is what lets a client arrive with nothing configured and find out what it
+can ask for. /v1/ocr and /v2/ocr are the two that spend money.
+
+The two versions read two different papers. /v1/ocr takes the crop the desktop
+application has always produced; /v2/ocr takes that crop with the 小学校 / 年 /
+組 strip pasted below it, and answers with three more values. They share every
+line of this module that is not about which frame the boxes are read in, and v1
+is left byte-identical on the wire - down to the settings string a client keys
+its cache on, because a page already read under it did not become wrong when
+v2 arrived. (3.2)
 
 The reading itself is a blocking SDK call, so the route is a plain `def` and
 FastAPI runs it in a worker thread. Two things guard it. A semaphore caps how
@@ -21,6 +29,7 @@ from __future__ import annotations
 
 import asyncio
 import contextlib
+import functools
 import logging
 import os
 import sys
@@ -31,7 +40,7 @@ from fastapi import Depends, FastAPI, File, Form, HTTPException, Request, Upload
 from fastapi.concurrency import run_in_threadpool
 from fastapi.responses import JSONResponse
 
-from .. import __version__, config, engines, ocr
+from .. import __version__, config, engines, grid, ocr
 from ..ocr import OCRError, OCRTimeout
 from . import limits, security
 from .schemas import (
@@ -40,8 +49,10 @@ from .schemas import (
     Health,
     ModelInfo,
     PageResponse,
+    PageResponseV2,
     ReportInfo,
     SheetInfo,
+    SheetInfoV2,
     UsageInfo,
 )
 
@@ -210,6 +221,16 @@ async def list_engines() -> list[EngineInfo]:
     do for itself, because the prompt, the grid and the value checks are all
     here. (3.2, 4.2)
     """
+    return listed_engines(config.SHEET_V1)
+
+
+def listed_engines(sheet: str) -> list[EngineInfo]:
+    """What GET /vN/engines answers, for whichever sheet asked.
+
+    One function for both, so the two versions cannot come to describe the same
+    engine differently. Still pure: it reads the environment and hashes
+    configuration, and builds nothing.
+    """
     found = []
     for name in sorted(engines.ENGINES):
         engine = engines.ENGINES[name]
@@ -226,13 +247,15 @@ async def list_engines() -> list[EngineInfo]:
                 ready=ready,
                 detail=detail,
                 default_model=engine.default_model(),
-                settings="" if offered else engine.settings_for(""),
-                cache_name="" if offered else (engine.cache_name_for("") or name),
+                settings="" if offered else engine.settings_for("", sheet),
+                cache_name=(
+                    "" if offered else (engine.cache_name_for("", sheet) or name)
+                ),
                 models=[
                     ModelInfo(
                         name=model,
-                        settings=engine.settings_for(model),
-                        cache_name=engine.cache_name_for(model),
+                        settings=engine.settings_for(model, sheet),
+                        cache_name=engine.cache_name_for(model, sheet),
                     )
                     for model in offered
                 ],
@@ -281,6 +304,25 @@ async def read_page(
     already: that is stage 1's job and it happens on the machine that holds the
     scan. Nothing here can check that, and nothing here should pretend to. (6.2)
     """
+    built, result = await read_one(request, image, engine, model, config.SHEET_V1)
+    return PageResponse(**page_fields(request, built, result))
+
+
+async def read_one(
+    request: Request,
+    image: UploadFile,
+    engine: str | None,
+    model: str | None,
+    sheet: str,
+) -> tuple[ocr.OCREngine, ocr.PageResult]:
+    """Everything both /v1/ocr and /v2/ocr do, which is everything but the shape.
+
+    One function, so the two versions cannot drift into weighing a body
+    differently, taking the slot in a different order, or answering the same
+    failure with two status codes. What differs between them is the sheet, and
+    the sheet decides only which frame the boxes are read in and whether the
+    strip is read at all. (6.1, 6.2, 6.4)
+    """
     request_id = request.state.request_id
     data = await image.read()
     limit = limits.max_image_bytes()
@@ -294,6 +336,7 @@ async def read_page(
     try:
         name = engines.resolve(engine)
         chosen = engines.choose_model(name, model)
+        paper = engines.choose_sheet(sheet)
     except ValueError as exc:
         raise HTTPException(400, str(exc)) from None
 
@@ -301,28 +344,34 @@ async def read_page(
     if not ready:
         raise HTTPException(503, detail)
     try:
-        built = await run_in_threadpool(engines.shared, name, chosen or None)
+        built = await run_in_threadpool(engines.shared, name, chosen or None, paper)
     except ValueError as exc:
         # A setting that passed the pure check and still could not be used - an
         # unreadable key, most likely. It names a setting and no secret.
         raise HTTPException(503, str(exc)) from None
 
     logger.info(
-        "%s: reading a %d byte page with %s%s",
+        "%s: reading a %d byte %s page with %s%s",
         request_id,
         len(data),
+        paper,
         name,
         f" ({chosen})" if chosen else "",
     )
     started = time.monotonic()
     async with a_slot(request_id):
         try:
+            v1 = paper == config.SHEET_V1
             result = await run_in_threadpool(
-                ocr.read_page_image,
-                data,
-                built,
-                "image/png",
-                deadline=started + limits.request_deadline(),
+                functools.partial(
+                    ocr.read_page_image,
+                    data,
+                    built,
+                    "image/png",
+                    deadline=started + limits.request_deadline(),
+                    at=grid.cell_at if v1 else grid.cell_at_v2,
+                    header_at=None if v1 else grid.header_at_v2,
+                )
             )
         except OCRTimeout as exc:
             logger.error("%s: %s", request_id, exc)
@@ -346,16 +395,32 @@ async def read_page(
         time.monotonic() - started,
         result.usage,
     )
+    request.state.engine_name = name
+    request.state.model_name = chosen
+    return built, result
+
+
+def page_fields(
+    request: Request, built: ocr.OCREngine, result: ocr.PageResult
+) -> dict:
+    """The answer both versions share, as keyword arguments.
+
+    A dict rather than a model, so PageResponse and PageResponseV2 each build
+    themselves and neither has to know the other exists. What is in it is
+    identical for the two sheets: the strip is the only difference and it is
+    added by the v2 route. (4.2)
+    """
+    name = request.state.engine_name
     marks = ocr.page_cells(result.rows, result.report)
-    return PageResponse(
-        request_id=request_id,
-        engine=name,
-        model=chosen,
-        settings=built.settings,
-        cache_name=built.cache_name or name,
-        sheet_fingerprint=ocr.checks_fingerprint(),
-        rows=result.rows,
-        report=ReportInfo(
+    return {
+        "request_id": request.state.request_id,
+        "engine": name,
+        "model": request.state.model_name,
+        "settings": built.settings,
+        "cache_name": built.cache_name or name,
+        "sheet_fingerprint": ocr.checks_fingerprint(),
+        "rows": result.rows,
+        "report": ReportInfo(
             values=result.report.values,
             rejected=result.report.rejected,
             disagreements=result.report.disagreements,
@@ -368,12 +433,78 @@ async def read_page(
                 for (row, field), problem in sorted(marks.items())
             ],
         ),
-        findings=result.findings,
-        usage=UsageInfo(
+        "findings": result.findings,
+        "usage": UsageInfo(
             calls=result.usage.calls,
             seconds=result.usage.seconds,
             prompt_tokens=result.usage.prompt_tokens,
             output_tokens=result.usage.output_tokens,
             thought_tokens=result.usage.thought_tokens,
         ),
+    }
+
+
+@app.get(
+    "/v2/engines",
+    response_model=list[EngineInfo],
+    dependencies=[Depends(security.require_key)],
+)
+async def list_engines_v2() -> list[EngineInfo]:
+    """The same answer as /v1/engines, keyed for the v2 sheet.
+
+    A separate route rather than a query parameter, so a client that reads the
+    composite talks to /v2 throughout and never has to remember to ask the first
+    version a second version's question. The settings strings differ from /v1's
+    and are meant to: they are what stops one page's two readings sharing a
+    cache entry. (3.2)
+    """
+    return listed_engines(config.SHEET_V2)
+
+
+@app.get(
+    "/v2/sheet",
+    response_model=SheetInfoV2,
+    dependencies=[Depends(security.require_key)],
+)
+async def sheet_v2() -> SheetInfoV2:
+    """The v2 paper: the table, unchanged, and the strip beside it.
+
+    `fingerprint` is the same digest /v1/sheet publishes and is the same number.
+    That is the point rather than a coincidence: v2 added a strip and changed
+    nothing about the table, and a client can see that here. (6.5)
+    """
+    return SheetInfoV2(
+        fingerprint=ocr.checks_fingerprint(),
+        sheet=config.sheet_definition(),
+        header_fingerprint=ocr.header_fingerprint(),
+        header=config.header_definition(),
+    )
+
+
+@app.post(
+    "/v2/ocr",
+    response_model=PageResponseV2,
+    dependencies=[Depends(security.require_key)],
+)
+async def read_page_v2(
+    request: Request,
+    image: UploadFile = File(description="One composite page, PNG."),
+    engine: str | None = Form(default=None, description="Which backend reads it."),
+    model: str | None = Form(default=None, description="Which model, if it has one."),
+) -> PageResponseV2:
+    """Read one composite page: the table, and the strip below it.
+
+    The composite is the v1 crop pasted at the top of a taller canvas with the
+    小学校 / 年 / 組 strip underneath. config.V2_CANVAS_PIXELS says what size it
+    has to be; a composite built to another one reads every value out of the
+    wrong cell, and nothing here can see that it happened. (6.2)
+
+    Still no 名前 and no 自宅住所: the client cuts the left half of the printed
+    header band, which is the half without them on it. This server never sees
+    them and must not start to. (6.2)
+    """
+    built, result = await read_one(request, image, engine, model, config.SHEET_V2)
+    return PageResponseV2(
+        **page_fields(request, built, result),
+        **{field: result.header.get(field, "") for field, _ in config.HEADER_FIELDS},
     )

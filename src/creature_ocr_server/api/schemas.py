@@ -136,3 +136,36 @@ class PageResponse(BaseModel):
     report: ReportInfo
     findings: list[str] = Field(default_factory=list)
     usage: UsageInfo
+
+
+class PageResponseV2(PageResponse):
+    """A v2 page: everything a v1 page returns, plus the strip above it.
+
+    A subclass, so the v1 shape is literally a prefix of this one and a client
+    that already parses /v1/ocr can read a v2 answer with the same code plus
+    three lookups. The three are top level rather than nested: they belong to
+    the page in the same way `sheet_fingerprint` does, and a `header` object
+    would suggest they are a group that could grow.
+
+    `school_class` is not called `class`. The word is a Python keyword, and a
+    field a client can read but this server cannot name in its own code is a
+    trap laid for whoever maintains it.
+    """
+
+    school: str = ""
+    grade: str = ""
+    school_class: str = ""
+
+
+class SheetInfoV2(SheetInfo):
+    """The v2 paper: the table's definition, and the strip's beside it.
+
+    Two fingerprints rather than one, because they are what an engine's v2
+    settings string is built from and a client should be able to see both halves
+    move independently. The table's is the same digest /v1/sheet publishes, and
+    it is the same number - which is the whole point: v2 did not change the
+    table. (3.2, 6.5)
+    """
+
+    header_fingerprint: str
+    header: dict

@@ -25,7 +25,7 @@ from dataclasses import dataclass
 from dataclasses import field as dataclass_field
 
 from . import config
-from .grid import Cell, cell_at, iter_cells
+from .grid import Cell, cell_at, header_at_v2, iter_cells
 
 logger = logging.getLogger(__name__)
 
@@ -226,7 +226,7 @@ class OCREngine(ABC):
         return ""
 
     @classmethod
-    def settings_for(cls, model: str) -> str:
+    def settings_for(cls, model: str, sheet: str = config.SHEET_V1) -> str:
         """What a client should key its cache on for this engine and model.
 
         Answerable without building anything, because GET /v1/engines answers
@@ -236,8 +236,14 @@ class OCREngine(ABC):
         return ""
 
     @classmethod
-    def cache_name_for(cls, model: str) -> str:
-        """The directory a client should keep this model's readings under."""
+    def cache_name_for(cls, model: str, sheet: str = config.SHEET_V1) -> str:
+        """The directory a client should keep this model's readings under.
+
+        The sheet joins the name for anything but v1. Two readings of one page
+        taken from two different images are two readings, and a client keeping
+        them under one name would overwrite one with the other. v1 keeps the
+        name it always had, so nothing a client has already filed moves. (3.2)
+        """
         return cls.name
 
     @abstractmethod
@@ -322,7 +328,9 @@ def recognize_with_retry(
         sleep(delay)
 
 
-def assign_to_cells(boxes: Iterable[TextBox]) -> dict[Cell, str]:
+def assign_to_cells(
+    boxes: Iterable[TextBox], at: Callable[[float, float], Cell | None] = cell_at
+) -> dict[Cell, str]:
     """Place every box in the cell its centre falls in and join each cell's text.
 
     Assignment goes by the centre point, so a character that overlaps a printed
@@ -335,10 +343,15 @@ def assign_to_cells(boxes: Iterable[TextBox]) -> dict[Cell, str]:
     its reading order, and without a separator: Japanese is written without
     spaces, so inserting one would corrupt every multi-token value. A box whose
     own text carries a line break is joined the same way, for the same reason.
+
+    `at` is which frame to read the fractions in - grid.cell_at for the crop
+    /v1/ocr is sent, grid.cell_at_v2 for the composite /v2/ocr is sent. It is an
+    argument rather than a setting for the reason every other per-request choice
+    here is: a process-global would hand one request's geometry to another's.
     """
     grouped: dict[Cell, list[TextBox]] = {cell: [] for cell in iter_cells()}
     for box in boxes:
-        cell = cell_at(*box.centre)
+        cell = at(*box.centre)
         if cell is None:
             logger.debug("dropped %r: it falls outside the table", box.text)
             continue
@@ -349,20 +362,66 @@ def assign_to_cells(boxes: Iterable[TextBox]) -> dict[Cell, str]:
     }
 
 
-def unsure_cells(boxes: Iterable[TextBox]) -> set[Cell]:
+def unsure_cells(
+    boxes: Iterable[TextBox], at: Callable[[float, float], Cell | None] = cell_at
+) -> set[Cell]:
     """The cells the engine said it could not read cleanly.
 
-    Placed by the same centre-point rule assign_to_cells uses, so a box is
-    marked in exactly the cell its text was counted in and nowhere else. (7.2)
+    Placed by the same centre-point rule assign_to_cells uses, and given the same
+    frame, so a box is marked in exactly the cell its text was counted in and
+    nowhere else. (7.2)
     """
     found = set()
     for box in boxes:
         if not box.unsure:
             continue
-        cell = cell_at(*box.centre)
+        cell = at(*box.centre)
         if cell is not None:
             found.add(cell)
     return found
+
+
+def assign_to_header(
+    boxes: Iterable[TextBox],
+    at: Callable[[float, float], str | None] = header_at_v2,
+) -> dict[str, str]:
+    """Place every box in the header field its centre falls in. (v2 only)
+
+    The strip's three values are one per sheet, so this returns a flat mapping
+    rather than the (row, field) one the table needs. Same centre-point rule,
+    same joining rule, same silence about anything that lands nowhere: the
+    printed 年 and 組 labels fall outside all three bands and are dropped here,
+    which is what stops a coordinate engine handing a label back as its answer.
+    """
+    grouped: dict[str, list[TextBox]] = {field: [] for field, _ in config.HEADER_FIELDS}
+    for box in boxes:
+        field = at(*box.centre)
+        if field is None:
+            continue
+        grouped[field].append(box)
+    return {
+        field: "".join(unwrap(box.text) for box in found)
+        for field, found in grouped.items()
+    }
+
+
+def check_header(field: str, text: str) -> tuple[str, str]:
+    """One page-level value, cleaned, and why anything was dropped.
+
+    年 and 組 are whole numbers, so anything that is not a digit is not a worse
+    reading of the answer but a reading of something else - the label beside it,
+    most likely - and is rejected whole rather than picked apart. 小学校 is a
+    name and goes through the same `check` every written column uses, which for
+    a field with no character set of its own is the script whitelist. (5.2-2)
+    """
+    if field in config.HEADER_DIGIT_FIELDS:
+        candidate = fold(field, text).strip()
+        if not candidate:
+            return "", ""
+        if not candidate.isdigit():
+            return "", f"rejected {candidate!r}, {field} is a number"
+        return candidate, ""
+    return check(field, text)
 
 
 def unwrap(text: str) -> str:
@@ -752,6 +811,20 @@ def checks_fingerprint() -> str:
     return hashlib.sha256(canonical.encode("utf-8")).hexdigest()[:8]
 
 
+def header_fingerprint() -> str:
+    """The same digest for the strip the v2 sheet adds.
+
+    Its own digest rather than three more fields inside sheet_definition, and
+    that is the whole reason a v1 client noticed nothing when v2 arrived: the
+    settings string a v1 page is cached under still carries the same
+    checks_fingerprint it always did. A v2 settings string carries both. (3.2)
+    """
+    canonical = json.dumps(
+        config.header_definition(), ensure_ascii=False, sort_keys=True
+    )
+    return hashlib.sha256(canonical.encode("utf-8")).hexdigest()[:8]
+
+
 @dataclass(frozen=True)
 class PageResult:
     """One page, read: its rows, its quality counts, and what to complain about.
@@ -772,6 +845,13 @@ class PageResult:
     # left on the engine, because the engine is shared by every request that
     # names its model and holds nothing that changes between calls. (6.1, 7.1)
     usage: Usage = Usage()
+    # The three page-level values of the v2 sheet, empty for v1. Last, so every
+    # existing positional PageResult(...) still means what it did. Deliberately
+    # outside `report`: the confidence counts the 88 cells of the table, and
+    # folding three more values into them would make a v2 page's percentage
+    # mean something different from a v1 page's and quietly break 7.2's
+    # comparison across a batch that has both.
+    header: dict[str, str] = dataclass_field(default_factory=dict)
 
 
 def read_page_image(
@@ -782,6 +862,8 @@ def read_page_image(
     backoff: float = config.OCR_BACKOFF_SECONDS,
     deadline: float | None = None,
     sleep: Callable[[float], None] | None = None,
+    at: Callable[[float, float], Cell | None] = cell_at,
+    header_at: Callable[[float, float], str | None] | None = None,
 ) -> PageResult:
     """Read one cropped page into its rows and its quality counts.
 
@@ -833,8 +915,8 @@ def read_page_image(
         findings.append(message)
         logger.warning("%s", message)
 
-    values = assign_to_cells(boxes)
-    unsure = unsure_cells(boxes)
+    values = assign_to_cells(boxes, at)
+    unsure = unsure_cells(boxes, at)
     rows = []
     rejected = 0
     gaps = 0
@@ -887,7 +969,17 @@ def read_page_image(
         time.monotonic() - started,
         reading.usage,
     )
+    # The strip, when there is one. After the table on purpose: its findings
+    # belong at the end of the page's list, and a page whose strip is blank must
+    # still return its eight rows.
+    header: dict[str, str] = {}
+    if header_at is not None:
+        for field, raw in assign_to_header(boxes, header_at).items():
+            header[field], reason = check_header(field, raw.strip())
+            if raw.strip() and not header[field]:
+                note(f"header: {field}: {reason}")
+
     offered = sum(1 for text in values.values() if text.strip())
     report = PageReport(offered, rejected, len(problems), gaps, strained, faulty)
     logger.info("%s", report)
-    return PageResult(rows, report, findings, reading.usage)
+    return PageResult(rows, report, findings, reading.usage, header)
