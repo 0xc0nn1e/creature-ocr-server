@@ -547,6 +547,41 @@ NEMOTRON_UNSURE_BELOW = 0.5
 # decided that a re-encoded page beats no reading at all. (5.2-3)
 NEMOTRON_JPEG_QUALITIES = (85, 70, 55, 40)
 
+# LM Studio, over its OpenAI-compatible server. Same rule again: only the key
+# names are here.
+#
+# This engine is the one that names no model. Whichever model the operator has
+# loaded in LM Studio is the reader, so the request carries no model id, the
+# allow-list is empty, and a request that names one is refused the way it is for
+# a Document AI processor. What that costs is said at LMSTUDIO_BASE_URL below.
+#
+# Unlike every other engine here this one has a default, because there is a
+# conventional answer: LM Studio serves its OpenAI-compatible API on
+# 127.0.0.1:1234 and an operator who has not changed it has nothing to fill in.
+# A wrong guess cannot bill anybody or read a deployment nobody chose - the
+# worst it can do is fail to reach a local port. (4.2, 6.5)
+LMSTUDIO_ENV_BASE_URL = "LMSTUDIO_BASE_URL"
+LMSTUDIO_ENV_API_KEY = "LMSTUDIO_API_KEY"
+LMSTUDIO_ENV_MODEL = "LMSTUDIO_MODEL"
+LMSTUDIO_ENV_TIMEOUT = "LMSTUDIO_TIMEOUT_SECONDS"
+
+LMSTUDIO_BASE_URL = "http://127.0.0.1:1234/v1"
+
+# How long one page may take before the call is abandoned to 6.4's retry. A
+# setting rather than a constant, which NEMOTRON_TIMEOUT_SECONDS is not: this
+# engine runs on whatever machine the operator has, and a page that a hosted
+# model answers in twenty seconds can take ten minutes on a laptop. Below
+# SERVER_REQUEST_DEADLINE_SECONDS for the same reason as nemotron's - the
+# deadline owns the whole request and this owns one attempt of it.
+LMSTUDIO_TIMEOUT_SECONDS = 120.0
+
+# 5.2-4 again, and for the same reason: re-running the same image has to give
+# the same rows. Their own constants rather than a reuse of the Gemini pair,
+# because those two are compared against the desktop repository's copy character
+# for character and this engine exists only here. The values are the same.
+LMSTUDIO_TEMPERATURE = 0.0
+LMSTUDIO_TOP_P = 0.1
+
 # Which engine a request that names none is served with. Only the key name and
 # the fallback are here; the value is read where the engine is built, so a test
 # can set the environment without reimporting this module. (6.5)

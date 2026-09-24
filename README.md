@@ -44,10 +44,16 @@ SDK・セルグリッド・値チェックは全部こちら**。アプリ側に
 だけでもパッケージは入り、テストも全部通る。エンジン名と extra 名は同じ語なので、
 `engine=gemini` と `pip install -e ".[gemini]"` は対になる。(4.2, 6.5)
 
-エンジンは三つ。`documentai` を使うなら `.[documentai]`、`nemotron` は**何も
-要らない** ― HTTP を一回投げるだけなので、基本インストールのまま動く。
-`.[nemotron]` が要るのは `NEMOTRON_MAX_BYTES` を設定したときだけで、その一つの
-設定のためだけに pymupdf が入る。
+エンジンは四つ。`documentai` を使うなら `.[documentai]`、`nemotron` と
+`lmstudio` は**何も要らない** ― どちらも HTTP を一回投げるだけなので、基本
+インストールのまま動く。`.[nemotron]` が要るのは `NEMOTRON_MAX_BYTES` を設定した
+ときだけで、その一つの設定のためだけに pymupdf が入る。`lmstudio` に extra は
+無い ― 入れるものが何も無いので、`.[lmstudio]` という名前も作っていない。
+
+`lmstudio` は**モデルを指定しないエンジン**。LM Studio 側で読み込んでいるモデルが
+そのまま読み手になるので、このサーバはモデルを選ばず、`model` を送れば 400 に
+なる。既定の宛先は `http://127.0.0.1:1234/v1` で、設定は `LMSTUDIO_BASE_URL` だけ
+― LM Studio をそのまま起動しているなら、埋めるものは一つも無い。
 
 ## Docker で動かす
 
@@ -154,6 +160,15 @@ SDK が自分で同じファイルを見つける。(6.3)
         ]
       },
       {
+        "name": "lmstudio",
+        "ready": true,
+        "detail": "",
+        "default_model": "",
+        "settings": "lmstudio http://127.0.0.1:1234/v1/chat/completions temperature=0.0 top_p=0.1 grid=d103bef3 prompt=7b48ed75 checks=79ebbe0c",
+        "cache_name": "lmstudio",
+        "models": []
+      },
+      {
         "name": "nemotron",
         "ready": false,
         "detail": "NEMOTRON_ENDPOINT is not set: see .env.example",
@@ -170,11 +185,12 @@ SDK が自分で同じファイルを見つける。(6.3)
 ここで公開する。設定が足りないエンジンは `ready: false` になり、`detail` に
 コンストラクタが投げるはずだった文がそのまま入る。(3.2, 4.2)
 
-`documentai` と `nemotron` の `models` が空なのは、**読み手がモデル ID ではない**
-から。前者はプロセッサ、後者は `NEMOTRON_ENDPOINT` が指す先そのものが読み手で、
-どちらもリクエストで選べるものではない。`model` を送れば 400 になる。
+`documentai`、`nemotron`、`lmstudio` の `models` が空なのは、**読み手がモデル ID
+ではない**から。順に、プロセッサ、`NEMOTRON_ENDPOINT` が指す先そのもの、そして
+LM Studio 側で読み込まれているモデルが読み手で、どれもリクエストで選べるものでは
+ない。`model` を送れば 400 になる。
 
-だからこの二つは `settings` と `cache_name` を**エンジンの階層で**返す。モデルの
+だからこの三つは `settings` と `cache_name` を**エンジンの階層で**返す。モデルの
 無いエンジンには `models[]` という置き場所が無く、そこに何も無いままだと
 キャッシュキーが**頼む前に読める場所のどこにも存在しない**ことになる。頼む前に
 キャッシュを見られるようにするのがこのエンドポイントの唯一の仕事なので、それ
@@ -187,6 +203,14 @@ SDK が自分で同じファイルを見つける。(6.3)
 `ready: false` のエンジンの鍵は、まだ設定されていない読み手を書き表している。
 上の例の `//` がそれで、設定が入れば実際のプロジェクトとプロセッサに変わる。
 鍵として使ってよいかは `ready` が答える。
+
+`lmstudio` の鍵には**どのモデルが読んだかが入っていない**。このエンドポイントは
+ソケットを開かないので、LM Studio が今どのモデルを読み込んでいるかを訊けない ―
+訊けるのは LM Studio 自身だけ。同じ URL の後ろでモデルを入れ替えても鍵は変わら
+ないので、クライアントは**前のモデルで読んだページを出し続ける**。実際に答えた
+モデル名は**サーバのログ**に 1 ページ 1 行、`X-Request-ID` の隣に出る。それが
+唯一の記録 ― 応答には入らない。`findings` はクライアントのエラーファイルなので、
+きれいに読めたページにも必ず 1 行増えるのは記録ではなく雑音になる。
 
 ### `GET /v1/sheet`
 
@@ -445,8 +469,8 @@ Python なら:
 `cache_name` がディレクトリ名、`settings` がその中の鍵。**どのエンジンでも
 `GET /v1/engines` で先に取れる**ので、ページを頼む**前に**キャッシュを見て、
 当たれば 1 回も課金せずに済む。gemini はモデルごとに `models[]` の中、
-`documentai` と `nemotron` はモデルを取らないのでエンジンの階層に入っている。
-どちらを読むかは `models` が空かどうかで決まる。
+`documentai`、`nemotron`、`lmstudio` はモデルを取らないのでエンジンの階層に
+入っている。どちらを読むかは `models` が空かどうかで決まる。
 
 v2 を使うなら鍵も `GET /v2/engines` から取る。同じエンジンの同じモデルでも
 `settings` と `cache_name` は v1 と違い、**違わなければならない**: 同じ紙の
@@ -481,13 +505,17 @@ v2 を使うなら鍵も `GET /v2/engines` から取る。同じエンジンの�
 | `GEMINI_MODEL` | なし | 既定のモデル ID |
 | `GOOGLE_APPLICATION_CREDENTIALS` | 空 | 空なら ADC、パスなら鍵ファイル、`{` 始まりなら鍵そのもの |
 | `GEMINI_MODELS` | `config.py` の一覧 | 許可するモデル、カンマ区切り |
-| `OCR_ENGINE` | `gemini` | 既定のエンジン。`gemini` / `documentai` / `nemotron` |
+| `OCR_ENGINE` | `gemini` | 既定のエンジン。`gemini` / `documentai` / `nemotron` / `lmstudio` |
 | `DOCUMENTAI_LOCATION` | なし | Document AI のリージョン。`us` か `eu` のみ |
 | `DOCUMENTAI_PROCESSOR_ID` | なし | Document OCR プロセッサの ID |
 | `NEMOTRON_ENDPOINT` | なし | ページを POST する URL そのもの。何も足さない |
 | `NVIDIA_API_KEY` | なし | nemotron の bearer トークン |
 | `NEMOTRON_VARIANT` | `v2_multilingual` | どのビルドを指しているか。キャッシュ名になるだけ |
 | `NEMOTRON_MAX_BYTES` | 空 | 超えたら JPEG で再エンコード。画質を捨てるので既定は空 |
+| `LMSTUDIO_BASE_URL` | `http://127.0.0.1:1234/v1` | LM Studio の OpenAI 互換サーバ。base URL で、`/chat/completions` を足す。ホストとポートだけなら `/v1` も足す |
+| `LMSTUDIO_API_KEY` | 空 | 空なら Authorization ヘッダを送らない。LM Studio 自身は見ない |
+| `LMSTUDIO_MODEL` | 空 | **通常は空**。名前の無いリクエストを拒む LM Studio のための逃げ道だけ |
+| `LMSTUDIO_TIMEOUT_SECONDS` | 120 | 1 回の試行の上限。ローカルのモデルは遅いので上げる余地がある |
 | `SERVER_API_KEY` | 空 | 設定すると `X-API-Key` か `Authorization: Bearer` を要求する |
 | `SERVER_MAX_IMAGE_BYTES` | 20 MiB | 受け付けるページの上限 |
 | `SERVER_MAX_CONCURRENCY` | 4 | 同時に走らせるエンジン呼び出し |
@@ -600,6 +628,10 @@ SDK クライアントが増え続ける。
 - **座標エンジンでの v2。** 枠と検査は入っているが、`documentai` と `nemotron`
   で v2 を通した実測はまだ無い。年 と 組 の間には印刷された罫線が無く、境界は
   判断で置いてある。
+- **lmstudio の実測。** エンジンとテストは入っているが、実際の LM Studio と本物の
+  ページを通した測定はまだ無い。ローカルの vision モデルがこの手書きをどこまで
+  読めるか、1 ページに何秒かかるかは未知で、`LMSTUDIO_TIMEOUT_SECONDS` の既定
+  120 秒で足りるかもそこで決まる。
 - **サーバ側キャッシュ。** アプリ側が既にページごとに持っている。
 - **バッチ endpoint、非同期ジョブ、PDF アップロード。** 切り抜きと個人情報帯の
   除去は、これからもアプリ側に残る。
