@@ -30,6 +30,7 @@ class FakeEngine(OCREngine):
     error = None
     cost = Usage(calls=0, prompt_tokens=11, output_tokens=22, thought_tokens=3)
     notes = ()
+    outside_minato = ()
 
     def __init__(self, model=None, sheet=config.SHEET_V1):
         self.model = model or "fake-1"
@@ -57,7 +58,12 @@ class FakeEngine(OCREngine):
     def recognize(self, image, mime_type="image/png"):
         if type(self).error is not None:
             raise type(self).error
-        return Reading(list(type(self).boxes), type(self).cost, list(type(self).notes))
+        return Reading(
+            list(type(self).boxes),
+            type(self).cost,
+            list(type(self).notes),
+            dict(type(self).outside_minato),
+        )
 
 
 def answering(boxes=(), error=None, notes=(), **attributes):
@@ -738,6 +744,29 @@ class ReadCompositePageTest(ApiTestCase):
             415,
         )
 
+    def test_the_marks_come_back_beside_the_rows_not_inside_them(self):
+        # A client that checks each row against the eleven columns has to keep
+        # reading every page, which it cannot if a row grows a key.
+        registry = answering(
+            boxes=[v2_box(3, "location_town", "こもろ")], outside_minato={3: "◎"}
+        )
+        body = self.client(registry).post(
+            "/v2/ocr",
+            files={"image": ("page01.png", PNG, "image/png")},
+        ).json()
+
+        self.assertEqual(body["outside_minato"], ["", "", "◎", "", "", "", "", ""])
+        for row in body["rows"]:
+            self.assertNotIn("outside_minato", row)
+
+    def test_a_page_nobody_marked_is_eight_blanks(self):
+        body = self.client().post(
+            "/v2/ocr",
+            files={"image": ("page01.png", PNG, "image/png")},
+        ).json()
+
+        self.assertEqual(body["outside_minato"], [""] * config.ROWS_PER_PAGE)
+
 
 class VersionsAreSeparateTest(ApiTestCase):
     """The two sheets must never share a cache entry, or an answer."""
@@ -774,6 +803,11 @@ class VersionsAreSeparateTest(ApiTestCase):
         self.assertNotIn("school", body)
         self.assertNotIn("grade", body)
         self.assertNotIn("school_class", body)
+
+    def test_the_v1_page_shape_has_no_marks_in_it(self):
+        body = self.read(self.client()).json()
+
+        self.assertNotIn("outside_minato", body)
 
     def test_v2_needs_the_key_too(self):
         client = self.client(environment={config.SERVER_ENV_API_KEY: "secret"})

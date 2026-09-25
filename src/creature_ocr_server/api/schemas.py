@@ -155,6 +155,12 @@ class PageResponseV2(PageResponse):
     school: str = ""
     grade: str = ""
     school_class: str = ""
+    # 港区以外, one mark per row in the order of `rows`, blank where there is
+    # none. Beside `rows` and not inside them: a client that checks a row's keys
+    # against the eleven columns keeps reading every page, and the value is a
+    # judgement about a row rather than something written in it. Only an engine
+    # that is asked the question fills it; the rest send eight blanks.
+    outside_minato: list[str] = Field(default_factory=list)
 
 
 class SheetInfoV2(SheetInfo):

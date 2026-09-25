@@ -572,6 +572,22 @@ class CompositeSheetTest(unittest.TestCase):
             assign_to_cells(found.boxes, cell_at_v2)[(1, "bug_name")], "カナブン"
         )
 
+    def test_the_marks_come_back_with_the_reading(self):
+        # Gemini's question and Gemini's parsing. What is this engine's own is
+        # handing the marks on rather than dropping them on the way.
+        found = self.recognize(
+            answer(
+                text=json.dumps(
+                    {
+                        "rows": [row(3, location_town="こもろ")],
+                        "outside_minato": [{"no": 3, "mark": "◎"}],
+                    }
+                )
+            )
+        )
+
+        self.assertEqual(found.outside_minato, {3: "◎"})
+
     def test_the_two_sheets_are_cached_under_different_names(self):
         self.assertNotEqual(
             LMStudioEngine.settings_for("", config.SHEET_V1),

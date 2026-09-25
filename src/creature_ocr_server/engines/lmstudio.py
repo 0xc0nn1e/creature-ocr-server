@@ -72,6 +72,7 @@ from .gemini import (
     build_prompt_v2,
     grid_fingerprint,
     grid_fingerprint_v2,
+    outside_minato_marks,
     prompt_fingerprint,
     prompt_fingerprint_v2,
     response_schema,
@@ -531,12 +532,16 @@ class LMStudioEngine(OCREngine):
             # The only record of which model read this page. Said here rather
             # than handed back in the reading: see the note at the top.
             logger.info("the model LM Studio had loaded is %s", answered)
+        marks: dict[int, str] = {}
         try:
             if self._sheet == config.SHEET_V1:
                 boxes, found = text_boxes(parse_rows(answer))
             else:
-                boxes, found = text_boxes_v2(parse_page_v2(answer))
+                page = parse_page_v2(answer)
+                boxes, found = text_boxes_v2(page)
+                marks, more = outside_minato_marks(page)
+                found += more
         except OCRError as exc:
             exc.usage = spent
             raise
-        return Reading(boxes, spent, found)
+        return Reading(boxes, spent, found, marks)

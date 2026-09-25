@@ -334,7 +334,7 @@ v2 が付いてくるし、どちらも打ち間違えようがない。
 
 | | |
 |---|---|
-| `POST /v2/ocr` | `/v1/ocr` と同じ multipart。応答は v1 の全項目 + `school` / `grade` / `school_class` |
+| `POST /v2/ocr` | `/v1/ocr` と同じ multipart。応答は v1 の全項目 + `school` / `grade` / `school_class` / `outside_minato` |
 | `GET /v2/engines` | `/v1/engines` と同じ形。`settings` と `cache_name` だけが違う |
 | `GET /v2/sheet` | `/v1/sheet` の内容 + `header_fingerprint` と `header` |
 
@@ -343,13 +343,14 @@ v2 が付いてくるし、どちらも打ち間違えようがない。
       -F "image=@output/生き物/page01_v2.png" \
       -F "engine=gemini" -F "model=gemini-3.7-flash"
 
-応答は `POST /v1/ocr` のものに三項目が足されただけ:
+応答は `POST /v1/ocr` のものに四項目が足されただけ:
 
     {
       ...v1 と同じ全項目...,
       "school": "芝",
       "grade": "4",
-      "school_class": "2"
+      "school_class": "2",
+      "outside_minato": ["", "", "◎", "", "", "", "", ""]
     }
 
 `school_class` であって `class` ではない。Python の予約語なので、クライアントが
@@ -358,14 +359,51 @@ v2 が付いてくるし、どちらも打ち間違えようがない。
 年と組は数字だけ。数字以外が来たら**近い数字に直さず空文字列にする**。5.2-2 の
 規則は見出し帯にもそのまま及ぶ。
 
+### 港区以外
+
+`outside_minato` は `rows` と同じ順に並んだ 8 個の文字列。その行の 見つけた場所_町
+と 場所の名前 が指す場所が港区の外である見込みを、表を読み終えたあとで gemini が
+判定した印:
+
+| 印 | 意味 |
+|---|---|
+| `◎` | ほぼ確実に港区の外 |
+| `○` | たぶん港区の外（中の可能性もある） |
+| `△` | 中か外か半々 |
+| 空 | 港区の中、町も名前も空欄、または 家の前・道路・くさの上 のように地名になっていない |
+
+町だけでなく名前も見るのは、出かけた先で見つけた子が町に 家の前 と書き、名前の方に
+`バングエド(フィリピン)` のような行き先を書くことがあるため。
+
+**読み取り値ではなく判定**。紙のどのセルにも書かれていないので `OCR_FIELDS` には
+入れていない。町と名前の値そのものは書かれたとおりに転記され、港区の町名一覧で直す
+ことも補うこともしない。信頼度にも数えない。
+
+`rows` の中ではなく横に置くのは、行のキーを 11 列と照合している既存のクライアントが
+そのまま全ページを読めるようにするため。
+
+- 判定するのは質問を受ける `gemini` と `lmstudio` だけ。`documentai` と `nemotron`
+  は常に 8 個とも空。
+- 三つの印以外が返ってきたら空にする。町も名前も空の行に付いた印も捨てる。
+  どちらも `findings` に残る。
+- 判定に使う列、印の意味、港区の町名一覧は `config.py` の `OUTSIDE_MINATO_FROM`・
+  `OUTSIDE_MINATO_MARKS`・`MINATO_TOWNS`。どれも v2 のプロンプトに入るので、変えれば
+  v2 の `settings` が変わる。
+- v1 には何も足していない。v1 のプロンプト・スキーマ・`settings` はそのまま。
+
 ### キャッシュは版ごとに分かれる
 
     v1  gemini-3.7-flash temperature=0.0 top_p=0.1 grid=d103bef3 prompt=7b48ed75 checks=79ebbe0c
-    v2  gemini-3.7-flash sheet=v2 temperature=0.0 top_p=0.1 grid=de202e9e prompt=0cc22836 checks=79ebbe0c+f9c84317
+    v2  gemini-3.7-flash sheet=v2 temperature=0.0 top_p=0.1 grid=de202e9e prompt=6e78dbc3 checks=79ebbe0c+f9c84317
 
 `cache_name` も `gemini-3.7-flash` と `gemini-3.7-flash-v2` に分かれる。同じ紙の
 二つの読み取りは**二つの読み取り**であって、一つの名前に置けば片方がもう片方を
 上書きする。engine は `(engine, model, sheet)` ごとに一つ組み立てられる。
+
+港区以外の判定を足したとき、v2 の `prompt` は `0cc22836` から `6e78dbc3` に
+変わった。`gemini` と `lmstudio` で v2 として読んだページは、次に読むとき一度だけ
+読み直しになる（その分は課金される）。`documentai` と `nemotron` の v2、それに v1 の
+キャッシュはそのまま使える。
 
 ### 座標エンジンだけが気にする一点
 

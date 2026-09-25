@@ -372,6 +372,14 @@ class SheetDefinitionParityTest(unittest.TestCase):
     def test_the_columns_are_the_same_in_the_same_order(self):
         self.assertEqual(server_config.OCR_FIELDS, self.config.OCR_FIELDS)
 
+    def test_the_minato_column_is_named_and_placed_the_same(self):
+        # The server sends the marks under this key and the desktop shows them
+        # after this column. A key that differed would drop every mark silently.
+        self.assertEqual(
+            server_config.OUTSIDE_MINATO_FIELD, self.config.OUTSIDE_MINATO_FIELD
+        )
+        self.assertEqual(server_config.OUTSIDE_MINATO_OF, self.config.OUTSIDE_MINATO_OF)
+
     def test_the_grid_is_the_same(self):
         self.assertEqual(server_config.CELL_ROW_EDGES, self.config.CELL_ROW_EDGES)
         self.assertEqual(server_config.CELL_COLUMNS, self.config.CELL_COLUMNS)

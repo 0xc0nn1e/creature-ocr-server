@@ -412,6 +412,58 @@ HEADER_BANDS_V2 = {
     "school_class": (0.2196, 0.8963, 0.2538, 0.9963),
 }
 
+# 港区以外: the one value of a v2 row that nobody wrote. The survey is of 港区,
+# and 見つけた場所_町 is meant to name a town in it, but now and then a child
+# writes down somewhere else - a grandparent's town, a holiday, another ward -
+# and those rows have to be found and set apart. So the model is asked, once it
+# has read the rows, how likely each row's place is to lie outside 港区.
+#
+# A judgement, not a reading, and kept apart from everything that is one. It is
+# not in OCR_FIELDS: it has no cell on the paper, so the grid could never place
+# it and a coordinate engine could never fill it, and putting it there would
+# change what sheet_definition hashes for every engine's cache. Nor does it ever
+# touch a reading: the town and the place name are still transcribed exactly as
+# written, and 5.2-2's "never guess" still holds for every cell of the table.
+# (3.1, 5.2-2)
+#
+# The key and the heading the xlsx and the result pane show it under, and the
+# column the desktop places it directly after.
+OUTSIDE_MINATO_FIELD = ("outside_minato", "港区以外")
+OUTSIDE_MINATO_OF = "location_town"
+
+# The columns a mark is a judgement about: the town, and the name of the spot. A
+# child who was away tends to put 家の前 in the town and where they were in the
+# name - バングエド(フィリピン) - so a question about the town alone misses them.
+OUTSIDE_MINATO_FROM = ("location_town", "location_name")
+
+# The marks, most certain first, and what each one means. The meaning is what the
+# model is told, so a mark is only ever given for the reason written beside it.
+# A row whose place is in 港区, is blank, or is no place at all gets no mark, and
+# neither does any row a mark comes back for with OUTSIDE_MINATO_FROM all empty.
+OUTSIDE_MINATO_MARKS = {
+    "◎": "almost certainly outside 港区",
+    "○": "probably outside 港区, though it could be inside",
+    "△": "as likely inside 港区 as outside it",
+}
+
+# 港区's thirty towns, by 地区, as the official 町名 spell them. A reading aid for
+# the judgement and nothing else, on the same terms BUG_NAME_HINTS is given: it
+# settles whether a town is in 港区, and never replaces what a child wrote.
+MINATO_TOWNS = (
+    # 芝
+    "芝公園", "芝大門", "芝", "浜松町", "海岸", "東新橋", "新橋", "西新橋",
+    "虎ノ門", "愛宕", "三田",
+    # 麻布
+    "麻布台", "麻布狸穴町", "麻布永坂町", "麻布十番", "東麻布", "元麻布",
+    "西麻布", "南麻布", "六本木",
+    # 赤坂
+    "赤坂", "元赤坂", "北青山", "南青山",
+    # 高輪
+    "高輪", "白金", "白金台",
+    # 芝浦港南
+    "芝浦", "港南", "台場",
+)
+
 
 # Document AI, using a Document OCR processor. Only the key names are here; the
 # values arrive from the real environment, which in a container means compose's

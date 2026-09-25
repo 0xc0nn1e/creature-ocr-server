@@ -129,17 +129,45 @@ def response_schema_v2() -> dict:
 
     `rows` is v1's array unchanged, so the table half of a v2 answer is parsed by
     exactly the code that parses a v1 one.
+
+    港区以外 sits beside `rows` rather than in each row, and after it. After,
+    because it is a judgement about what the rows say and should be made once
+    they have been read, never in the middle of reading one. Beside, because it
+    lists only the rows that earn a mark: asking every row for one would put
+    pressure on eight answers to be something. (5.2-1)
     """
+    outside, _ = config.OUTSIDE_MINATO_FIELD
     return {
         "type": "object",
         "properties": {
             **{key: {"type": "string"} for key, _ in config.HEADER_FIELDS},
             "rows": response_schema(),
+            outside: {
+                "type": "array",
+                "items": {
+                    "type": "object",
+                    "properties": {
+                        "no": {
+                            "type": "integer",
+                            "minimum": 1,
+                            "maximum": config.ROWS_PER_PAGE,
+                        },
+                        "mark": {
+                            "type": "string",
+                            "enum": list(config.OUTSIDE_MINATO_MARKS),
+                        },
+                    },
+                    "required": ["no", "mark"],
+                    "propertyOrdering": ["no", "mark"],
+                },
+            },
         },
         # Same reasoning as v1's `required`: a strip nobody filled in must be
-        # able to come back empty rather than invented.
+        # able to come back empty rather than invented, and so must a page with
+        # nothing to mark.
         "required": ["rows"],
-        "propertyOrdering": [key for key, _ in config.HEADER_FIELDS] + ["rows"],
+        "propertyOrdering": [key for key, _ in config.HEADER_FIELDS]
+        + ["rows", outside],
     }
 
 
@@ -398,12 +426,23 @@ def build_prompt_v2() -> str:
     header band out - the half without 名前 and 自宅住所 on it - and pastes it
     below the table, so one call reads both without the page ever carrying
     personal information. (5.2-5, 6.2)
+
+    The 港区以外 judgement is appended here too, and only here: v1's prompt has
+    to keep coming out 7b48ed75, and the question is asked of the page the
+    desktop reads, which is this one.
     """
     labels = "\n".join(
         f"- {key}: the number or name written before the printed {header}"
         for key, header in config.HEADER_FIELDS
     )
     digits = ", ".join(config.HEADER_DIGIT_FIELDS)
+    outside, _ = config.OUTSIDE_MINATO_FIELD
+    town, name = config.OUTSIDE_MINATO_FROM
+    marks = "\n".join(
+        f"- {mark}: {meaning}"
+        for mark, meaning in config.OUTSIDE_MINATO_MARKS.items()
+    )
+    towns = "、".join(config.MINATO_TOWNS)
     return build_prompt() + f"""
 Below the table, separated from it by white space, is a short strip cut from the
 printed header of the same sheet. It holds three values that belong to the whole
@@ -421,6 +460,36 @@ word, a range, or a number with anything else attached to it.
 
 The strip is often left blank. An empty strip is three empty strings, and it
 changes nothing about the {config.ROWS_PER_PAGE} rows you return above.
+
+Last, one question that is a judgement rather than a reading. The survey is of
+港区 in Tokyo, and {town} and {name} say where in it the insect was found, but
+now and then a child writes down a place outside 港区 instead. Once every row has
+been read, judge for each row how likely the place its {town} and {name} name is
+to be outside 港区, and list in `{outside}` the rows that may be, each as its row
+number `no` and one mark:
+{marks}
+
+Either column can be the one that names the place. A child who was away often
+writes 家の前 as the {town} and where they were as the {name}, so read both. A
+place abroad is outside 港区: a country such as フィリピン, or a town in one. A
+name that one row explains, such as バングエド(フィリピン), is the same place on
+the rows of the page that give it alone.
+
+Leave a row out when both are blank, when the place is in 港区, and when neither
+names a place at all - 家の前, 道路, お店の前, くさの上, みちばたで or みちのえき
+say what kind of spot the insect was in, not where that spot is - whatever the
+rest of the row says. A page whose places are all in 港区 has an empty list.
+
+These are the towns of 港区:
+{towns}
+
+A town written in kana, written in part, or misspelled is still that town, and a
+park, a station or a building you know to be in 港区 is in 港区. A {town} or a
+{name} written as 〃 repeats the value above it: judge the place it repeats.
+
+This changes nothing about `rows`. Each of {town} and {name} is still
+transcribed exactly as it is written - never completed, corrected or replaced
+from this list - whatever you conclude about the place.
 """
 
 
@@ -579,6 +648,52 @@ def _by_cell_boxes_v2(rows: Iterable[object]) -> tuple[list[TextBox], list[str]]
         if text:
             boxes.append(TextBox(text, *cell_band_v2(*cell), unsure=cell in unsure))
     return boxes, notes
+
+
+def outside_minato_marks(page: dict) -> tuple[dict[int, str], list[str]]:
+    """A v2 response's 港区以外 marks, by row number, and what went wrong.
+
+    Placed here and checked nowhere near here: which marks count, and whether a
+    row has a place for one to be about, is read_page_image's business, as it is
+    for every value. Nothing raises. The rows are already read by the time this
+    runs, and a mark is not worth them, so a list the model left out is a page
+    with nothing marked and a bad entry is one dropped mark and a note.
+
+    Not _row_number: the list holds only the rows that earn a mark, so an
+    entry's position says nothing and a complaint about it would be noise.
+    """
+    outside, _ = config.OUTSIDE_MINATO_FIELD
+    listed = page.get(outside)
+    if listed is None:
+        return {}, []
+    if not isinstance(listed, list):
+        return {}, [f"{outside} is not a list: {listed!r}"]
+    marks: dict[int, str] = {}
+    notes: list[str] = []
+    for entry in listed:
+        if not isinstance(entry, dict):
+            notes.append(
+                f"{outside}: dropped an entry that is not an object: {entry!r}"
+            )
+            continue
+        raw = entry.get("no")
+        try:
+            number = int(float(raw))
+        except (TypeError, ValueError, OverflowError):
+            notes.append(f"{outside}: dropped a mark for {raw!r}: not a row number")
+            continue
+        if not 1 <= number <= config.ROWS_PER_PAGE:
+            notes.append(
+                f"{outside}: dropped a mark for row {number}: "
+                f"the sheet has {config.ROWS_PER_PAGE} rows"
+            )
+            continue
+        if number in marks:
+            notes.append(f"{outside}: dropped a second mark for row {number}")
+            continue
+        mark = entry.get("mark")
+        marks[number] = "" if mark is None else str(mark)
+    return marks, notes
 
 
 def _finish_reason(response) -> str:
@@ -856,12 +971,16 @@ class GeminiEngine(OCREngine):
         # cannot be: a page that came back unusable was still charged for, and
         # hiding that would understate the run. (6.1, 7.1)
         spent = tokens(response)
+        marks: dict[int, str] = {}
         try:
             if self._sheet == config.SHEET_V1:
                 boxes, notes = text_boxes(parse_rows(response))
             else:
-                boxes, notes = text_boxes_v2(parse_page_v2(response))
+                page = parse_page_v2(response)
+                boxes, notes = text_boxes_v2(page)
+                marks, more = outside_minato_marks(page)
+                notes += more
         except OCRError as exc:
             exc.usage = spent
             raise
-        return Reading(boxes, spent, notes)
+        return Reading(boxes, spent, notes, marks)

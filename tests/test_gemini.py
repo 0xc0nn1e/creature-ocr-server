@@ -24,6 +24,7 @@ from creature_ocr_server.engines.gemini import (
     build_prompt,
     build_prompt_v2,
     grid_fingerprint,
+    outside_minato_marks,
     parse_page_v2,
     parse_rows,
     prompt_fingerprint,
@@ -1032,3 +1033,130 @@ class CompositeSheetTest(unittest.TestCase):
     def test_an_unknown_sheet_is_refused(self):
         with self.assertRaises(ValueError):
             GeminiEngine(project="p", location="l", model="m", sheet="v3")
+
+
+class OutsideMinatoTest(unittest.TestCase):
+    """港区以外: a judgement asked of the v2 page, beside its rows."""
+
+    def setUp(self):
+        quieten(self)
+
+    def build(self, sdk, sheet=config.SHEET_V2):
+        """A v2 engine with the SDK replaced, the way GeminiEngineTest builds one."""
+        with patch.dict(os.environ, {config.GOOGLE_ENV_CREDENTIALS: ""}):
+            with patch("creature_ocr_server.engines.gemini._load_sdk", return_value=sdk):
+                return GeminiEngine(
+                    project="p", location="us-central1", model="m", sheet=sheet
+                )
+
+    def test_the_marks_are_asked_for_after_the_rows(self):
+        # A judgement about what the rows say, so made once they have been read
+        # and never in the middle of reading one.
+        self.assertEqual(
+            response_schema_v2()["propertyOrdering"][-2:], ["rows", "outside_minato"]
+        )
+
+    def test_a_mark_can_only_be_one_of_the_three(self):
+        item = response_schema_v2()["properties"]["outside_minato"]["items"]
+
+        self.assertEqual(
+            item["properties"]["mark"]["enum"], list(config.OUTSIDE_MINATO_MARKS)
+        )
+        self.assertEqual(item["required"], ["no", "mark"])
+
+    def test_v1_is_asked_nothing_about_it(self):
+        # Every page a v1 client has cached was read under this prompt and this
+        # schema, and none of those readings became wrong.
+        self.assertNotIn("outside_minato", json.dumps(response_schema()))
+        self.assertNotIn("outside_minato", build_prompt())
+
+    def test_the_prompt_gives_every_mark_and_every_town(self):
+        prompt = build_prompt_v2()
+
+        for mark, meaning in config.OUTSIDE_MINATO_MARKS.items():
+            self.assertIn(f"{mark}: {meaning}", prompt)
+        for town in config.MINATO_TOWNS:
+            self.assertIn(town, prompt)
+
+    def test_the_place_name_is_judged_as_well_as_the_town(self):
+        # 家の前 in the town and バングエド(フィリピン) in the name: a question
+        # about the town alone would never see where the child was.
+        prompt = build_prompt_v2()
+        question = prompt[prompt.index("Last, one question"):]
+
+        for field in config.OUTSIDE_MINATO_FROM:
+            self.assertIn(field, question)
+
+    def test_the_prompt_says_the_town_is_still_written_as_it_is(self):
+        # The list is there to judge by, and the one thing it must not do is
+        # finish a child's みなみあざぶ into 南麻布.
+        self.assertIn("transcribed exactly as it is", build_prompt_v2())
+
+    def test_another_town_list_is_another_v2_reading_and_the_same_v1_one(self):
+        v1 = GeminiEngine.settings_for("m")
+        v2 = GeminiEngine.settings_for("m", sheet=config.SHEET_V2)
+
+        with patch.object(config, "MINATO_TOWNS", ("芝",)):
+            self.assertEqual(GeminiEngine.settings_for("m"), v1)
+            self.assertNotEqual(
+                GeminiEngine.settings_for("m", sheet=config.SHEET_V2), v2
+            )
+
+    def test_marks_are_placed_by_the_row_number_they_name(self):
+        marks, notes = outside_minato_marks(
+            {
+                "rows": [],
+                "outside_minato": [
+                    {"no": 3, "mark": "◎"},
+                    {"no": 5.0, "mark": "△"},
+                ],
+            }
+        )
+
+        self.assertEqual(marks, {3: "◎", 5: "△"})
+        self.assertEqual(notes, [])
+
+    def test_a_page_with_no_list_has_nothing_marked(self):
+        self.assertEqual(outside_minato_marks({"rows": []}), ({}, []))
+
+    def test_what_cannot_be_placed_is_dropped_with_a_note(self):
+        marks, notes = outside_minato_marks(
+            {
+                "outside_minato": [
+                    {"no": 2, "mark": "◎"},
+                    {"no": 2, "mark": "△"},
+                    {"no": 9, "mark": "◎"},
+                    {"no": "three", "mark": "◎"},
+                    "◎",
+                ]
+            }
+        )
+
+        self.assertEqual(marks, {2: "◎"})
+        self.assertEqual(len(notes), 4)
+        self.assertIn("outside_minato: dropped a second mark for row 2", notes)
+
+    def test_a_list_that_is_not_a_list_is_a_note_not_a_failure(self):
+        # The rows are read by now, and a mark is not worth them.
+        marks, notes = outside_minato_marks({"outside_minato": "◎"})
+
+        self.assertEqual(marks, {})
+        self.assertEqual(notes, ["outside_minato is not a list: '◎'"])
+
+    def test_the_engine_hands_the_marks_on_with_the_reading(self):
+        page = {
+            "rows": [row(3, location_town="こもろ")],
+            "outside_minato": [{"no": 3, "mark": "◎"}],
+        }
+        sdk = fake_sdk(fake_response(page))
+
+        found = self.build(sdk).recognize(PAGE)
+
+        self.assertEqual(found.outside_minato, {3: "◎"})
+
+    def test_a_v1_page_carries_no_marks(self):
+        sdk = fake_sdk(fake_response([row(3, location_town="こもろ")]))
+
+        found = self.build(sdk, sheet=config.SHEET_V1).recognize(PAGE)
+
+        self.assertEqual(found.outside_minato, {})

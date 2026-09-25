@@ -507,4 +507,5 @@ async def read_page_v2(
     return PageResponseV2(
         **page_fields(request, built, result),
         **{field: result.header.get(field, "") for field, _ in config.HEADER_FIELDS},
+        outside_minato=result.outside_minato,
     )

@@ -163,6 +163,12 @@ class Reading:
     boxes: list[TextBox] = dataclass_field(default_factory=list)
     usage: Usage = Usage()
     notes: list[str] = dataclass_field(default_factory=list)
+    # 港区以外, by printed row number, as the engine gave it: the one thing a
+    # reading carries that is not text on the page, so it cannot travel as a
+    # box. Unchecked here - read_page_image checks it against the rows, the way
+    # it checks every box. Empty for an engine that is asked no such question,
+    # and last with a default so every existing Reading(...) still builds.
+    outside_minato: dict[int, str] = dataclass_field(default_factory=dict)
 
 
 class OCREngine(ABC):
@@ -321,7 +327,12 @@ def recognize_with_retry(
             )
         else:
             spent = spent + Usage(calls=1, seconds=time.monotonic() - started)
-            return Reading(reading.boxes, spent + reading.usage, reading.notes)
+            return Reading(
+                reading.boxes,
+                spent + reading.usage,
+                reading.notes,
+                reading.outside_minato,
+            )
         # Deliberately after the clock has stopped: waiting is not call time.
         # At the default backoff three retries wait 1 + 2 + 4 seconds, which
         # would swamp the latency the log is there to show. (6.1)
@@ -422,6 +433,27 @@ def check_header(field: str, text: str) -> tuple[str, str]:
             return "", f"rejected {candidate!r}, {field} is a number"
         return candidate, ""
     return check(field, text)
+
+
+def check_outside_minato(mark: str, row: dict[str, str]) -> tuple[str, str]:
+    """One row's 港区以外 mark, kept or dropped, and why it was dropped.
+
+    Only a mark on the list is a mark, so anything else is dropped whole rather
+    than read as the nearest one. And a mark is a judgement about the row's
+    place, so a row with every column of it empty - blank on the paper, or
+    emptied by the checks - has nothing for it to be about and keeps none. `row`
+    holds the checked values, never what the engine offered. (5.2-2)
+    """
+    mark = mark.strip()
+    if not mark:
+        return "", ""
+    if mark not in config.OUTSIDE_MINATO_MARKS:
+        listed = " ".join(config.OUTSIDE_MINATO_MARKS)
+        return "", f"rejected {mark!r}, not one of {listed}"
+    if not any(row[field] for field in config.OUTSIDE_MINATO_FROM):
+        empty = " and ".join(config.OUTSIDE_MINATO_FROM)
+        return "", f"dropped {mark!r}, {empty} are empty"
+    return mark, ""
 
 
 def unwrap(text: str) -> str:
@@ -852,6 +884,10 @@ class PageResult:
     # mean something different from a v1 page's and quietly break 7.2's
     # comparison across a batch that has both.
     header: dict[str, str] = dataclass_field(default_factory=dict)
+    # 港区以外, one per row in row order, blank where there is no mark. Outside
+    # `report` for the same reason as the strip: it is a judgement about a row
+    # rather than a cell of it, and the confidence is about the cells.
+    outside_minato: list[str] = dataclass_field(default_factory=list)
 
 
 def read_page_image(
@@ -978,8 +1014,20 @@ def read_page_image(
             header[field], reason = check_header(field, raw.strip())
             if raw.strip() and not header[field]:
                 note(f"header: {field}: {reason}")
+    # 港区以外, last: it is about the rows, so it is checked against them once
+    # they are final, and its findings come after everything that was read.
+    outside_minato = []
+    key, _ = config.OUTSIDE_MINATO_FIELD
+    for number, row in enumerate(rows, start=1):
+        raw = reading.outside_minato.get(number, "")
+        mark, reason = check_outside_minato(raw, row)
+        if reason:
+            note(f"row {number}: {key}: {reason}")
+        outside_minato.append(mark)
 
     offered = sum(1 for text in values.values() if text.strip())
     report = PageReport(offered, rejected, len(problems), gaps, strained, faulty)
     logger.info("%s", report)
-    return PageResult(rows, report, findings, reading.usage, header)
+    return PageResult(
+        rows, report, findings, reading.usage, header, outside_minato
+    )
