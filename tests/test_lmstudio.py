@@ -588,6 +588,20 @@ class CompositeSheetTest(unittest.TestCase):
 
         self.assertEqual(found.outside_minato, {3: "◎"})
 
+    def test_the_species_marks_come_back_with_the_reading(self):
+        found = self.recognize(
+            answer(
+                text=json.dumps(
+                    {
+                        "rows": [row(2, bug_name="シオカラトンボ")],
+                        "target_species": [{"no": 2, "mark": "◎"}],
+                    }
+                )
+            )
+        )
+
+        self.assertEqual(found.target_species, {2: "◎"})
+
     def test_the_two_sheets_are_cached_under_different_names(self):
         self.assertNotEqual(
             LMStudioEngine.settings_for("", config.SHEET_V1),

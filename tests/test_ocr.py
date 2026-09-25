@@ -82,13 +82,20 @@ class RecordingEngine(OCREngine):
     name = "recording"
 
     def __init__(
-        self, boxes=(), error=None, cost=None, notes=(), outside_minato=None
+        self,
+        boxes=(),
+        error=None,
+        cost=None,
+        notes=(),
+        outside_minato=None,
+        target_species=None,
     ):
         self.boxes = list(boxes)
         self.error = error
         self.cost = cost if cost is not None else Usage()
         self.notes = list(notes)
         self.outside_minato = dict(outside_minato or {})
+        self.target_species = dict(target_species or {})
         self.calls = 0
         self.images = []
         self.mime_types = []
@@ -100,7 +107,11 @@ class RecordingEngine(OCREngine):
         if self.error is not None:
             raise self.error
         return Reading(
-            list(self.boxes), self.cost, list(self.notes), dict(self.outside_minato)
+            list(self.boxes),
+            self.cost,
+            list(self.notes),
+            dict(self.outside_minato),
+            dict(self.target_species),
         )
 
 
@@ -1365,6 +1376,98 @@ class OutsideMinatoTest(unittest.TestCase):
 
         self.assertEqual(result.rows[1]["location_town"], "")
         self.assertEqual(result.outside_minato[1], "")
+
+
+class TargetSpeciesTest(unittest.TestCase):
+    """調査対象種: one mark per row, checked against the name it is about."""
+
+    def setUp(self):
+        quieten(self)
+
+    def test_a_mark_survives_the_retry_policy(self):
+        # recognize_with_retry builds a new Reading to add the call's cost to,
+        # and a field it did not copy across would vanish without a word.
+        engine = RecordingEngine(target_species={3: "◎"})
+
+        found = recognize_with_retry(engine, PAGE, sleep=Recorder())
+
+        self.assertEqual(found.target_species, {3: "◎"})
+
+    def test_a_mark_reaches_the_row_it_is_about(self):
+        engine = RecordingEngine(filled_row(3), target_species={3: "◎"})
+
+        result = read_page_image(PAGE, engine)
+
+        self.assertEqual(result.target_species, ["", "", "◎", "", "", "", "", ""])
+        self.assertEqual(result.findings, [])
+
+    def test_a_page_nobody_marked_is_eight_blanks(self):
+        result = read_page_image(PAGE, RecordingEngine(filled_row(1)))
+
+        self.assertEqual(result.target_species, [""] * config.ROWS_PER_PAGE)
+
+    def test_a_mark_is_never_a_reading(self):
+        # Not in any row, and not in what the confidence is counted from: the
+        # 88 cells are exactly what they were before the question was asked.
+        plain = read_page_image(PAGE, RecordingEngine(filled_row(1)))
+        marked = read_page_image(
+            PAGE, RecordingEngine(filled_row(1), target_species={1: "○"})
+        )
+
+        self.assertEqual(marked.rows, plain.rows)
+        self.assertEqual(marked.report, plain.report)
+        self.assertEqual(marked.target_species[0], "○")
+
+    def test_a_mark_off_the_list_is_dropped_and_reported(self):
+        # △ is a 港区以外 mark and not one of these. Close is not the answer.
+        engine = RecordingEngine(filled_row(1), target_species={1: "△"})
+
+        result = read_page_image(PAGE, engine)
+
+        self.assertEqual(result.target_species[0], "")
+        self.assertIn(
+            "row 1: target_species: rejected '△', not one of ◎ ○",
+            result.findings,
+        )
+
+    def test_a_mark_on_a_row_with_no_name_is_dropped(self):
+        engine = RecordingEngine(
+            filled_row(2, bug_name=""), target_species={2: "◎"}
+        )
+
+        result = read_page_image(PAGE, engine)
+
+        self.assertEqual(result.target_species[1], "")
+        self.assertIn(
+            "row 2: target_species: dropped '◎', bug_name is empty",
+            result.findings,
+        )
+
+    def test_a_name_the_checks_emptied_keeps_no_mark_either(self):
+        # Hangul where a name should be is a misread, and 5.2-2 empties it. A
+        # mark about a value nobody can see would be a mark about nothing.
+        engine = RecordingEngine(
+            filled_row(2, bug_name="시오카라"), target_species={2: "◎"}
+        )
+
+        result = read_page_image(PAGE, engine)
+
+        self.assertEqual(result.rows[1]["bug_name"], "")
+        self.assertEqual(result.target_species[1], "")
+
+    def test_the_two_judgements_are_checked_apart(self):
+        # A row with a place and no name keeps its 港区以外 mark and loses this
+        # one: each is about its own columns.
+        engine = RecordingEngine(
+            filled_row(2, bug_name="", location_town="こもろ"),
+            outside_minato={2: "◎"},
+            target_species={2: "◎"},
+        )
+
+        result = read_page_image(PAGE, engine)
+
+        self.assertEqual(result.outside_minato[1], "◎")
+        self.assertEqual(result.target_species[1], "")
 
 
 class UsageTest(unittest.TestCase):

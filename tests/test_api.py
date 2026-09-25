@@ -31,6 +31,7 @@ class FakeEngine(OCREngine):
     cost = Usage(calls=0, prompt_tokens=11, output_tokens=22, thought_tokens=3)
     notes = ()
     outside_minato = ()
+    target_species = ()
 
     def __init__(self, model=None, sheet=config.SHEET_V1):
         self.model = model or "fake-1"
@@ -63,6 +64,7 @@ class FakeEngine(OCREngine):
             type(self).cost,
             list(type(self).notes),
             dict(type(self).outside_minato),
+            dict(type(self).target_species),
         )
 
 
@@ -767,6 +769,28 @@ class ReadCompositePageTest(ApiTestCase):
 
         self.assertEqual(body["outside_minato"], [""] * config.ROWS_PER_PAGE)
 
+    def test_the_species_marks_come_back_beside_the_rows_too(self):
+        registry = answering(
+            boxes=[v2_box(2, "bug_name", "シオカラトンボ")], target_species={2: "◎"}
+        )
+        body = self.client(registry).post(
+            "/v2/ocr",
+            files={"image": ("page01.png", PNG, "image/png")},
+        ).json()
+
+        self.assertEqual(body["target_species"], ["", "◎", "", "", "", "", "", ""])
+        self.assertEqual(body["outside_minato"], [""] * config.ROWS_PER_PAGE)
+        for row in body["rows"]:
+            self.assertNotIn("target_species", row)
+
+    def test_a_page_with_no_species_marked_is_eight_blanks(self):
+        body = self.client().post(
+            "/v2/ocr",
+            files={"image": ("page01.png", PNG, "image/png")},
+        ).json()
+
+        self.assertEqual(body["target_species"], [""] * config.ROWS_PER_PAGE)
+
 
 class VersionsAreSeparateTest(ApiTestCase):
     """The two sheets must never share a cache entry, or an answer."""
@@ -808,6 +832,7 @@ class VersionsAreSeparateTest(ApiTestCase):
         body = self.read(self.client()).json()
 
         self.assertNotIn("outside_minato", body)
+        self.assertNotIn("target_species", body)
 
     def test_v2_needs_the_key_too(self):
         client = self.client(environment={config.SERVER_ENV_API_KEY: "secret"})

@@ -119,6 +119,29 @@ def response_schema() -> dict:
     }
 
 
+def _row_marks_schema(marks: dict[str, str]) -> dict:
+    """The rows that earn one of `marks`, each as its row number and its mark."""
+    return {
+        "type": "array",
+        "items": {
+            "type": "object",
+            "properties": {
+                "no": {
+                    "type": "integer",
+                    "minimum": 1,
+                    "maximum": config.ROWS_PER_PAGE,
+                },
+                "mark": {
+                    "type": "string",
+                    "enum": list(marks),
+                },
+            },
+            "required": ["no", "mark"],
+            "propertyOrdering": ["no", "mark"],
+        },
+    }
+
+
 def response_schema_v2() -> dict:
     """The JSON shape a v2 page comes back in.
 
@@ -134,40 +157,25 @@ def response_schema_v2() -> dict:
     because it is a judgement about what the rows say and should be made once
     they have been read, never in the middle of reading one. Beside, because it
     lists only the rows that earn a mark: asking every row for one would put
-    pressure on eight answers to be something. (5.2-1)
+    pressure on eight answers to be something. (5.2-1) 調査対象種 is the same
+    kind of judgement, and follows it on the same terms.
     """
     outside, _ = config.OUTSIDE_MINATO_FIELD
+    target, _ = config.TARGET_SPECIES_FIELD
     return {
         "type": "object",
         "properties": {
             **{key: {"type": "string"} for key, _ in config.HEADER_FIELDS},
             "rows": response_schema(),
-            outside: {
-                "type": "array",
-                "items": {
-                    "type": "object",
-                    "properties": {
-                        "no": {
-                            "type": "integer",
-                            "minimum": 1,
-                            "maximum": config.ROWS_PER_PAGE,
-                        },
-                        "mark": {
-                            "type": "string",
-                            "enum": list(config.OUTSIDE_MINATO_MARKS),
-                        },
-                    },
-                    "required": ["no", "mark"],
-                    "propertyOrdering": ["no", "mark"],
-                },
-            },
+            outside: _row_marks_schema(config.OUTSIDE_MINATO_MARKS),
+            target: _row_marks_schema(config.TARGET_SPECIES_MARKS),
         },
         # Same reasoning as v1's `required`: a strip nobody filled in must be
         # able to come back empty rather than invented, and so must a page with
         # nothing to mark.
         "required": ["rows"],
         "propertyOrdering": [key for key, _ in config.HEADER_FIELDS]
-        + ["rows", outside],
+        + ["rows", outside, target],
     }
 
 
@@ -427,9 +435,13 @@ def build_prompt_v2() -> str:
     below the table, so one call reads both without the page ever carrying
     personal information. (5.2-5, 6.2)
 
-    The 港区以外 judgement is appended here too, and only here: v1's prompt has
-    to keep coming out 7b48ed75, and the question is asked of the page the
-    desktop reads, which is this one.
+    The 港区以外 and 調査対象種 judgements are appended here too, and only
+    here: v1's prompt has to keep coming out 7b48ed75, and the questions are
+    asked of the page the desktop reads, which is this one.
+
+    The 調査対象種 examples of how a name can be written are made up or come
+    from pages read in use, never from the benchmark's labels, so the benchmark
+    still measures what it says. (7.2)
     """
     labels = "\n".join(
         f"- {key}: the number or name written before the printed {header}"
@@ -443,6 +455,14 @@ def build_prompt_v2() -> str:
         for mark, meaning in config.OUTSIDE_MINATO_MARKS.items()
     )
     towns = "、".join(config.MINATO_TOWNS)
+    target, _ = config.TARGET_SPECIES_FIELD
+    bug = config.TARGET_SPECIES_OF
+    sure, likely = config.TARGET_SPECIES_MARKS
+    target_marks = "\n".join(
+        f"- {mark}: {meaning}"
+        for mark, meaning in config.TARGET_SPECIES_MARKS.items()
+    )
+    species = "、".join(config.TARGET_SPECIES)
     return build_prompt() + f"""
 Below the table, separated from it by white space, is a short strip cut from the
 printed header of the same sheet. It holds three values that belong to the whole
@@ -461,12 +481,12 @@ word, a range, or a number with anything else attached to it.
 The strip is often left blank. An empty strip is three empty strings, and it
 changes nothing about the {config.ROWS_PER_PAGE} rows you return above.
 
-Last, one question that is a judgement rather than a reading. The survey is of
-港区 in Tokyo, and {town} and {name} say where in it the insect was found, but
-now and then a child writes down a place outside 港区 instead. Once every row has
-been read, judge for each row how likely the place its {town} and {name} name is
-to be outside 港区, and list in `{outside}` the rows that may be, each as its row
-number `no` and one mark:
+Last, two questions that are judgements rather than readings. The first is
+about the place. The survey is of 港区 in Tokyo, and {town} and {name} say where
+in it the insect was found, but now and then a child writes down a place outside
+港区 instead. Once every row has been read, judge for each row how likely the
+place its {town} and {name} name is to be outside 港区, and list in `{outside}`
+the rows that may be, each as its row number `no` and one mark:
 {marks}
 
 Either column can be the one that names the place. A child who was away often
@@ -490,6 +510,34 @@ park, a station or a building you know to be in 港区 is in 港区. A {town} or
 This changes nothing about `rows`. Each of {town} and {name} is still
 transcribed exactly as it is written - never completed, corrected or replaced
 from this list - whatever you conclude about the place.
+
+The second is about the insect. The survey counts these species, its 調査対象種:
+{species}
+
+Once every row has been read, judge for each row whether its {bug} names one of
+these species, and list in `{target}` the rows that do or may, each as its row
+number `no` and one mark:
+{target_marks}
+
+A name is still the species when it is written in hiragana, in kanji or in a mix
+of scripts - しおからとんぼ and しおからトンボ are シオカラトンボ, and 大カマキリ is
+オオカマキリ - and when the child has added a note about the insect itself, as in
+シオカラトンボ(オス), シオカラトンボのメス or キアゲハの幼虫. Those are {sure}.
+
+A name a character or two away from a listed one, the way a child misspells or
+miswrites it - シオカラトンホ, ナミアゲバ - is {likely}, and so is a name the child
+says they are unsure of, as in たぶんナミアゲハ.
+
+Leave a row out when its {bug} is blank, when it names an insect that is not on
+the list, and when it names a group rather than one species - カマキリ,
+アゲハチョウ, トンボ, チョウのなかま - even though listed species belong to that
+group. A {bug} written as 〃 repeats the name above it: judge the name it
+repeats. A page with none of these species has an empty list.
+
+This changes nothing about `rows` either. Each {bug} is still transcribed exactly
+as it is written - a misspelled name stays misspelled, and a name is never
+completed, corrected or replaced from this list - whatever you conclude about
+it.
 """
 
 
@@ -651,45 +699,54 @@ def _by_cell_boxes_v2(rows: Iterable[object]) -> tuple[list[TextBox], list[str]]
 
 
 def outside_minato_marks(page: dict) -> tuple[dict[int, str], list[str]]:
-    """A v2 response's 港区以外 marks, by row number, and what went wrong.
+    """A v2 response's 港区以外 marks, by row number, and what went wrong."""
+    return _row_marks(page, config.OUTSIDE_MINATO_FIELD[0])
+
+
+def target_species_marks(page: dict) -> tuple[dict[int, str], list[str]]:
+    """A v2 response's 調査対象種 marks, by row number, and what went wrong."""
+    return _row_marks(page, config.TARGET_SPECIES_FIELD[0])
+
+
+def _row_marks(page: dict, key: str) -> tuple[dict[int, str], list[str]]:
+    """The marks listed under `key`, by row number, and what went wrong.
 
     Placed here and checked nowhere near here: which marks count, and whether a
-    row has a place for one to be about, is read_page_image's business, as it is
-    for every value. Nothing raises. The rows are already read by the time this
-    runs, and a mark is not worth them, so a list the model left out is a page
-    with nothing marked and a bad entry is one dropped mark and a note.
+    row has anything for one to be about, is read_page_image's business, as it
+    is for every value. Nothing raises. The rows are already read by the time
+    this runs, and a mark is not worth them, so a list the model left out is a
+    page with nothing marked and a bad entry is one dropped mark and a note.
 
     Not _row_number: the list holds only the rows that earn a mark, so an
     entry's position says nothing and a complaint about it would be noise.
     """
-    outside, _ = config.OUTSIDE_MINATO_FIELD
-    listed = page.get(outside)
+    listed = page.get(key)
     if listed is None:
         return {}, []
     if not isinstance(listed, list):
-        return {}, [f"{outside} is not a list: {listed!r}"]
+        return {}, [f"{key} is not a list: {listed!r}"]
     marks: dict[int, str] = {}
     notes: list[str] = []
     for entry in listed:
         if not isinstance(entry, dict):
             notes.append(
-                f"{outside}: dropped an entry that is not an object: {entry!r}"
+                f"{key}: dropped an entry that is not an object: {entry!r}"
             )
             continue
         raw = entry.get("no")
         try:
             number = int(float(raw))
         except (TypeError, ValueError, OverflowError):
-            notes.append(f"{outside}: dropped a mark for {raw!r}: not a row number")
+            notes.append(f"{key}: dropped a mark for {raw!r}: not a row number")
             continue
         if not 1 <= number <= config.ROWS_PER_PAGE:
             notes.append(
-                f"{outside}: dropped a mark for row {number}: "
+                f"{key}: dropped a mark for row {number}: "
                 f"the sheet has {config.ROWS_PER_PAGE} rows"
             )
             continue
         if number in marks:
-            notes.append(f"{outside}: dropped a second mark for row {number}")
+            notes.append(f"{key}: dropped a second mark for row {number}")
             continue
         mark = entry.get("mark")
         marks[number] = "" if mark is None else str(mark)
@@ -972,6 +1029,7 @@ class GeminiEngine(OCREngine):
         # hiding that would understate the run. (6.1, 7.1)
         spent = tokens(response)
         marks: dict[int, str] = {}
+        species: dict[int, str] = {}
         try:
             if self._sheet == config.SHEET_V1:
                 boxes, notes = text_boxes(parse_rows(response))
@@ -980,7 +1038,9 @@ class GeminiEngine(OCREngine):
                 boxes, notes = text_boxes_v2(page)
                 marks, more = outside_minato_marks(page)
                 notes += more
+                species, more = target_species_marks(page)
+                notes += more
         except OCRError as exc:
             exc.usage = spent
             raise
-        return Reading(boxes, spent, notes, marks)
+        return Reading(boxes, spent, notes, marks, species)

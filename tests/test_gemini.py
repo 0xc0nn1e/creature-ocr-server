@@ -30,6 +30,7 @@ from creature_ocr_server.engines.gemini import (
     prompt_fingerprint,
     response_schema,
     response_schema_v2,
+    target_species_marks,
     text_boxes,
     text_boxes_v2,
     tokens,
@@ -1052,9 +1053,9 @@ class OutsideMinatoTest(unittest.TestCase):
     def test_the_marks_are_asked_for_after_the_rows(self):
         # A judgement about what the rows say, so made once they have been read
         # and never in the middle of reading one.
-        self.assertEqual(
-            response_schema_v2()["propertyOrdering"][-2:], ["rows", "outside_minato"]
-        )
+        ordering = response_schema_v2()["propertyOrdering"]
+
+        self.assertGreater(ordering.index("outside_minato"), ordering.index("rows"))
 
     def test_a_mark_can_only_be_one_of_the_three(self):
         item = response_schema_v2()["properties"]["outside_minato"]["items"]
@@ -1082,7 +1083,9 @@ class OutsideMinatoTest(unittest.TestCase):
         # 家の前 in the town and バングエド(フィリピン) in the name: a question
         # about the town alone would never see where the child was.
         prompt = build_prompt_v2()
-        question = prompt[prompt.index("Last, one question"):]
+        question = prompt[
+            prompt.index("Last, two questions"):prompt.index("The second is about")
+        ]
 
         for field in config.OUTSIDE_MINATO_FROM:
             self.assertIn(field, question)
@@ -1160,3 +1163,153 @@ class OutsideMinatoTest(unittest.TestCase):
         found = self.build(sdk, sheet=config.SHEET_V1).recognize(PAGE)
 
         self.assertEqual(found.outside_minato, {})
+
+
+class TargetSpeciesTest(unittest.TestCase):
+    """調査対象種: the second judgement asked of the v2 page, beside its rows."""
+
+    def setUp(self):
+        quieten(self)
+
+    def build(self, sdk, sheet=config.SHEET_V2):
+        """A v2 engine with the SDK replaced, the way GeminiEngineTest builds one."""
+        with patch.dict(os.environ, {config.GOOGLE_ENV_CREDENTIALS: ""}):
+            with patch("creature_ocr_server.engines.gemini._load_sdk", return_value=sdk):
+                return GeminiEngine(
+                    project="p", location="us-central1", model="m", sheet=sheet
+                )
+
+    def question(self):
+        """The part of the v2 prompt that asks it."""
+        prompt = build_prompt_v2()
+        return prompt[prompt.index("The second is about the insect"):]
+
+    def test_the_marks_are_asked_for_last(self):
+        # After the rows, like 港区以外, and after 港区以外 as well, because
+        # that is the order the prompt asks the two questions in.
+        self.assertEqual(
+            response_schema_v2()["propertyOrdering"][-3:],
+            ["rows", "outside_minato", "target_species"],
+        )
+
+    def test_a_mark_can_only_be_one_of_the_two(self):
+        item = response_schema_v2()["properties"]["target_species"]["items"]
+
+        self.assertEqual(
+            item["properties"]["mark"]["enum"], list(config.TARGET_SPECIES_MARKS)
+        )
+        self.assertEqual(item["required"], ["no", "mark"])
+
+    def test_v1_is_asked_nothing_about_it(self):
+        # Every page a v1 client has cached was read under this prompt and this
+        # schema, and none of those readings became wrong.
+        self.assertNotIn("target_species", json.dumps(response_schema()))
+        self.assertNotIn("target_species", build_prompt())
+        with patch.object(config, "TARGET_SPECIES", ("テストムシ",)):
+            self.assertNotIn("テストムシ", build_prompt())
+
+    def test_the_prompt_gives_every_mark_and_the_species_list(self):
+        # By names no other list carries: the real 28 are last year's names as
+        # well, and would be found in the prompt whether this listed them or not.
+        with patch.object(config, "TARGET_SPECIES", ("テストムシ", "ダミームシ")):
+            question = self.question()
+
+        for mark, meaning in config.TARGET_SPECIES_MARKS.items():
+            self.assertIn(f"{mark}: {meaning}", question)
+        self.assertIn("テストムシ、ダミームシ", question)
+        self.assertIn(config.TARGET_SPECIES_OF, question)
+
+    def test_the_examples_earn_the_marks_the_config_names(self):
+        # The prompt says which mark each kind of name earns, and says it with
+        # the configured marks rather than two typed into the text.
+        with patch.object(
+            config, "TARGET_SPECIES_MARKS", {"A": "sure", "B": "not sure"}
+        ):
+            question = self.question()
+
+        self.assertIn("Those are A.", question)
+        self.assertIn("is B, and so is", question)
+
+    def test_the_prompt_says_the_name_is_still_written_as_it_is(self):
+        # The list is there to judge by. The one thing it must not do is turn a
+        # child's misspelling into the listed name, which 7.2 has caught Gemini
+        # doing once already. (7.2)
+        self.assertIn("a misspelled name stays misspelled", self.question())
+
+    def test_another_species_list_is_another_v2_reading_and_the_same_v1_one(self):
+        v1 = GeminiEngine.settings_for("m")
+        v2 = GeminiEngine.settings_for("m", sheet=config.SHEET_V2)
+
+        with patch.object(config, "TARGET_SPECIES", ("シオカラトンボ",)):
+            self.assertEqual(GeminiEngine.settings_for("m"), v1)
+            self.assertNotEqual(
+                GeminiEngine.settings_for("m", sheet=config.SHEET_V2), v2
+            )
+
+    def test_marks_are_placed_by_the_row_number_they_name(self):
+        marks, notes = target_species_marks(
+            {
+                "rows": [],
+                "target_species": [
+                    {"no": 1, "mark": "◎"},
+                    {"no": 4.0, "mark": "○"},
+                ],
+            }
+        )
+
+        self.assertEqual(marks, {1: "◎", 4: "○"})
+        self.assertEqual(notes, [])
+
+    def test_the_two_lists_are_read_apart(self):
+        # One page carries both, and a mark under one key is never one under
+        # the other.
+        page = {
+            "rows": [],
+            "outside_minato": [{"no": 2, "mark": "◎"}],
+            "target_species": [{"no": 3, "mark": "○"}],
+        }
+
+        self.assertEqual(outside_minato_marks(page), ({2: "◎"}, []))
+        self.assertEqual(target_species_marks(page), ({3: "○"}, []))
+
+    def test_a_page_with_no_list_has_nothing_marked(self):
+        self.assertEqual(target_species_marks({"rows": []}), ({}, []))
+
+    def test_what_cannot_be_placed_is_dropped_with_a_note_naming_the_list(self):
+        marks, notes = target_species_marks(
+            {
+                "target_species": [
+                    {"no": 2, "mark": "◎"},
+                    {"no": 2, "mark": "○"},
+                    "◎",
+                ]
+            }
+        )
+
+        self.assertEqual(marks, {2: "◎"})
+        self.assertEqual(
+            notes,
+            [
+                "target_species: dropped a second mark for row 2",
+                "target_species: dropped an entry that is not an object: '◎'",
+            ],
+        )
+
+    def test_the_engine_hands_the_marks_on_with_the_reading(self):
+        page = {
+            "rows": [row(2, bug_name="しおからトンボ")],
+            "target_species": [{"no": 2, "mark": "◎"}],
+        }
+        sdk = fake_sdk(fake_response(page))
+
+        found = self.build(sdk).recognize(PAGE)
+
+        self.assertEqual(found.target_species, {2: "◎"})
+        self.assertEqual(found.outside_minato, {})
+
+    def test_a_v1_page_carries_no_marks(self):
+        sdk = fake_sdk(fake_response([row(2, bug_name="シオカラトンボ")]))
+
+        found = self.build(sdk, sheet=config.SHEET_V1).recognize(PAGE)
+
+        self.assertEqual(found.target_species, {})

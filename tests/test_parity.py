@@ -380,6 +380,13 @@ class SheetDefinitionParityTest(unittest.TestCase):
         )
         self.assertEqual(server_config.OUTSIDE_MINATO_OF, self.config.OUTSIDE_MINATO_OF)
 
+    def test_the_species_column_is_named_and_placed_the_same(self):
+        # The same failure 港区以外 guards against, for the second judgement.
+        self.assertEqual(
+            server_config.TARGET_SPECIES_FIELD, self.config.TARGET_SPECIES_FIELD
+        )
+        self.assertEqual(server_config.TARGET_SPECIES_OF, self.config.TARGET_SPECIES_OF)
+
     def test_the_grid_is_the_same(self):
         self.assertEqual(server_config.CELL_ROW_EDGES, self.config.CELL_ROW_EDGES)
         self.assertEqual(server_config.CELL_COLUMNS, self.config.CELL_COLUMNS)

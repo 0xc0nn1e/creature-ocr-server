@@ -334,7 +334,7 @@ v2 が付いてくるし、どちらも打ち間違えようがない。
 
 | | |
 |---|---|
-| `POST /v2/ocr` | `/v1/ocr` と同じ multipart。応答は v1 の全項目 + `school` / `grade` / `school_class` / `outside_minato` |
+| `POST /v2/ocr` | `/v1/ocr` と同じ multipart。応答は v1 の全項目 + `school` / `grade` / `school_class` / `outside_minato` / `target_species` |
 | `GET /v2/engines` | `/v1/engines` と同じ形。`settings` と `cache_name` だけが違う |
 | `GET /v2/sheet` | `/v1/sheet` の内容 + `header_fingerprint` と `header` |
 
@@ -343,14 +343,15 @@ v2 が付いてくるし、どちらも打ち間違えようがない。
       -F "image=@output/生き物/page01_v2.png" \
       -F "engine=gemini" -F "model=gemini-3.7-flash"
 
-応答は `POST /v1/ocr` のものに四項目が足されただけ:
+応答は `POST /v1/ocr` のものに五項目が足されただけ:
 
     {
       ...v1 と同じ全項目...,
       "school": "芝",
       "grade": "4",
       "school_class": "2",
-      "outside_minato": ["", "", "◎", "", "", "", "", ""]
+      "outside_minato": ["", "", "◎", "", "", "", "", ""],
+      "target_species": ["◎", "", "○", "", "", "", "", ""]
     }
 
 `school_class` であって `class` ではない。Python の予約語なので、クライアントが
@@ -391,18 +392,47 @@ v2 が付いてくるし、どちらも打ち間違えようがない。
   v2 の `settings` が変わる。
 - v1 には何も足していない。v1 のプロンプト・スキーマ・`settings` はそのまま。
 
+### 調査対象種
+
+`target_species` も `rows` と同じ順に並んだ 8 個の文字列。その行の 発見した虫の名前
+が、調査が数える 28 種（調査対象種）のどれかを指しているかを、港区以外 の次に gemini
+が判定した印:
+
+| 印 | 意味 |
+|---|---|
+| `◎` | 対象種のどれか。ひらがな・漢字で書いたものや、`シオカラトンボ(オス)`・`キアゲハの幼虫` のような書き添えも含む |
+| `○` | たぶん対象種。1〜2 字の書き違いや、`たぶんナミアゲハ` のように本人が迷っているもの |
+| 空 | 対象種でない、`カマキリ`・`アゲハチョウ` のような仲間の総称、または名前が空欄 |
+
+一覧と突き合わせるだけなら判定は要らないが、子どもの書き違いは一覧のどれとも一致
+しないまま対象種であることが多く、それを拾えるのはモデルだけなので、港区以外 と同じ
+**判定**として尋ねる。`OCR_FIELDS` に入れない理由、`rows` の横に置く理由も同じ。
+虫の名前そのものは書かれたとおりに転記され、書き違いを一覧の名前に直すことはしない。
+プロンプトに挙げる書き方の例は作ったものか運用で読んだページのもので、ベンチマークの
+正解ラベルからは取っていない。
+
+- 判定するのは `gemini` と `lmstudio` だけ。`documentai` と `nemotron` は常に 8 個とも空。
+- 二つの印以外が返ってきたら空にする。虫の名前が空の行（チェックで空にされた行を
+  含む）に付いた印も捨てる。どちらも `findings` に残る。
+- 対象種の一覧と印の意味は `config.py` の `TARGET_SPECIES`・`TARGET_SPECIES_MARKS`。
+  一覧はいまのところ `BUG_NAME_HINTS` と同じ 28 種だが、あちらは読み取りの手がかりで
+  役目が違うので別に持つ。どちらも v2 のプロンプトに入るので、変えれば v2 の `settings`
+  が変わる。
+- v1 には何も足していない。
+
 ### キャッシュは版ごとに分かれる
 
     v1  gemini-3.7-flash temperature=0.0 top_p=0.1 grid=d103bef3 prompt=7b48ed75 checks=79ebbe0c
-    v2  gemini-3.7-flash sheet=v2 temperature=0.0 top_p=0.1 grid=de202e9e prompt=6e78dbc3 checks=79ebbe0c+f9c84317
+    v2  gemini-3.7-flash sheet=v2 temperature=0.0 top_p=0.1 grid=de202e9e prompt=b093dcc4 checks=79ebbe0c+f9c84317
 
 `cache_name` も `gemini-3.7-flash` と `gemini-3.7-flash-v2` に分かれる。同じ紙の
 二つの読み取りは**二つの読み取り**であって、一つの名前に置けば片方がもう片方を
 上書きする。engine は `(engine, model, sheet)` ごとに一つ組み立てられる。
 
-港区以外の判定を足したとき、v2 の `prompt` は `0cc22836` から `6e78dbc3` に
-変わった。`gemini` と `lmstudio` で v2 として読んだページは、次に読むとき一度だけ
-読み直しになる（その分は課金される）。`documentai` と `nemotron` の v2、それに v1 の
+港区以外の判定を足したとき、v2 の `prompt` は `0cc22836` から `6e78dbc3` に、
+調査対象種の判定を足したときに `6e78dbc3` から `b093dcc4` に変わった。そのたびに
+`gemini` と `lmstudio` で v2 として読んだページは、次に読むとき一度だけ読み直しに
+なる（その分は課金される）。`documentai` と `nemotron` の v2、それに v1 の
 キャッシュはそのまま使える。
 
 ### 座標エンジンだけが気にする一点

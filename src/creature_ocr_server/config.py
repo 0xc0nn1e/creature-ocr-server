@@ -412,7 +412,7 @@ HEADER_BANDS_V2 = {
     "school_class": (0.2196, 0.8963, 0.2538, 0.9963),
 }
 
-# 港区以外: the one value of a v2 row that nobody wrote. The survey is of 港区,
+# 港区以外: a value of a v2 row that nobody wrote. The survey is of 港区,
 # and 見つけた場所_町 is meant to name a town in it, but now and then a child
 # writes down somewhere else - a grandparent's town, a holiday, another ward -
 # and those rows have to be found and set apart. So the model is asked, once it
@@ -462,6 +462,65 @@ MINATO_TOWNS = (
     "高輪", "白金", "白金台",
     # 芝浦港南
     "芝浦", "港南", "台場",
+)
+
+# 調査対象種: the other value of a v2 row that nobody wrote. The survey counts a
+# fixed set of species, and the rows that report one have to be found among
+# everything else children write down. Whether 発見した虫の名前 names one is a
+# judgement rather than a lookup - a misspelled name is still very likely the
+# species, and only the model can say so - so it is asked on 港区以外's terms:
+# once the rows are read, beside them rather than in them, never in OCR_FIELDS,
+# and never touching the name itself, which is still transcribed exactly as it
+# is written. (3.1, 5.2-2)
+#
+# The key and the heading the xlsx and the result pane show it under, and the
+# column the desktop places it directly after, which is also the one it judges.
+TARGET_SPECIES_FIELD = ("target_species", "調査対象種")
+TARGET_SPECIES_OF = "bug_name"
+
+# The marks, most certain first, and what each one means; told to the model as
+# written, the way OUTSIDE_MINATO_MARKS are. A row whose name is blank, is not
+# on the list, or names a group rather than one species gets no mark, and
+# neither does any row a mark comes back for with TARGET_SPECIES_OF empty.
+TARGET_SPECIES_MARKS = {
+    "◎": "the name is one of these species",
+    "○": "the name is probably one of these species, but not certainly",
+}
+
+# The survey's 調査対象種, in the order and spelling of its own table. Today the
+# same 28 names as BUG_NAME_HINTS, and kept apart from them all the same: that
+# list is a reading aid with its own reasons to change, and a new hint must not
+# quietly become a species the survey counts. It is in the v2 prompt, so
+# re-benchmark after touching it. (3.1, 7.2)
+TARGET_SPECIES = (
+    "オンブバッタ",
+    "ショウリョウバッタモドキ",
+    "ショウリョウバッタ",
+    "カナブン",
+    "アオドウガネ",
+    "リュウキュウツヤハナムグリ",
+    "コフキコガネ",
+    "シロテンハナムグリ",
+    "タマムシ",
+    "ギンヤンマ",
+    "コシアキトンボ",
+    "オオシオカラトンボ",
+    "シオカラトンボ",
+    "ハラビロカマキリ",
+    "コカマキリ",
+    "オオカマキリ",
+    "チョウセンカマキリ",
+    "ナミアゲハ",
+    "キアゲハ",
+    "アカボシゴマダラ",
+    "ヤマトシジミ",
+    "ルリシジミ",
+    "ツバメシジミ",
+    "モンキアゲハ",
+    "クロアゲハ",
+    "ナガサキアゲハ",
+    "ツマグロヒョウモン",
+    "アオスジアゲハ",
 )
 
 

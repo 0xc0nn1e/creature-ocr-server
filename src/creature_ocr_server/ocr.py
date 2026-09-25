@@ -163,12 +163,15 @@ class Reading:
     boxes: list[TextBox] = dataclass_field(default_factory=list)
     usage: Usage = Usage()
     notes: list[str] = dataclass_field(default_factory=list)
-    # 港区以外, by printed row number, as the engine gave it: the one thing a
-    # reading carries that is not text on the page, so it cannot travel as a
-    # box. Unchecked here - read_page_image checks it against the rows, the way
-    # it checks every box. Empty for an engine that is asked no such question,
-    # and last with a default so every existing Reading(...) still builds.
+    # 港区以外, by printed row number, as the engine gave it: one of the two
+    # things a reading carries that are not text on the page, so it cannot
+    # travel as a box. Unchecked here - read_page_image checks it against the
+    # rows, the way it checks every box. Empty for an engine that is asked no
+    # such question, and last with a default so every existing Reading(...)
+    # still builds.
     outside_minato: dict[int, str] = dataclass_field(default_factory=dict)
+    # 調査対象種, the other one, on exactly the same terms.
+    target_species: dict[int, str] = dataclass_field(default_factory=dict)
 
 
 class OCREngine(ABC):
@@ -332,6 +335,7 @@ def recognize_with_retry(
                 spent + reading.usage,
                 reading.notes,
                 reading.outside_minato,
+                reading.target_species,
             )
         # Deliberately after the clock has stopped: waiting is not call time.
         # At the default backoff three retries wait 1 + 2 + 4 seconds, which
@@ -453,6 +457,26 @@ def check_outside_minato(mark: str, row: dict[str, str]) -> tuple[str, str]:
     if not any(row[field] for field in config.OUTSIDE_MINATO_FROM):
         empty = " and ".join(config.OUTSIDE_MINATO_FROM)
         return "", f"dropped {mark!r}, {empty} are empty"
+    return mark, ""
+
+
+def check_target_species(mark: str, row: dict[str, str]) -> tuple[str, str]:
+    """One row's 調査対象種 mark, kept or dropped, and why it was dropped.
+
+    check_outside_minato's rules, about the insect rather than the place: only
+    a mark on the list is a mark, and a row whose 発見した虫の名前 is empty -
+    blank on the paper, or emptied by the checks - names no insect for one to
+    be about. `row` holds the checked values, never what the engine offered.
+    (5.2-2)
+    """
+    mark = mark.strip()
+    if not mark:
+        return "", ""
+    if mark not in config.TARGET_SPECIES_MARKS:
+        listed = " ".join(config.TARGET_SPECIES_MARKS)
+        return "", f"rejected {mark!r}, not one of {listed}"
+    if not row[config.TARGET_SPECIES_OF]:
+        return "", f"dropped {mark!r}, {config.TARGET_SPECIES_OF} is empty"
     return mark, ""
 
 
@@ -888,6 +912,8 @@ class PageResult:
     # `report` for the same reason as the strip: it is a judgement about a row
     # rather than a cell of it, and the confidence is about the cells.
     outside_minato: list[str] = dataclass_field(default_factory=list)
+    # 調査対象種, the same shape, for the same reasons.
+    target_species: list[str] = dataclass_field(default_factory=list)
 
 
 def read_page_image(
@@ -1024,10 +1050,25 @@ def read_page_image(
         if reason:
             note(f"row {number}: {key}: {reason}")
         outside_minato.append(mark)
+    # 調査対象種 the same way, and after 港区以外 because it is asked after it.
+    target_species = []
+    key, _ = config.TARGET_SPECIES_FIELD
+    for number, row in enumerate(rows, start=1):
+        raw = reading.target_species.get(number, "")
+        mark, reason = check_target_species(raw, row)
+        if reason:
+            note(f"row {number}: {key}: {reason}")
+        target_species.append(mark)
 
     offered = sum(1 for text in values.values() if text.strip())
     report = PageReport(offered, rejected, len(problems), gaps, strained, faulty)
     logger.info("%s", report)
     return PageResult(
-        rows, report, findings, reading.usage, header, outside_minato
+        rows,
+        report,
+        findings,
+        reading.usage,
+        header,
+        outside_minato,
+        target_species,
     )

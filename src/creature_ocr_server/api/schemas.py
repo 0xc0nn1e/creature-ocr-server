@@ -161,6 +161,9 @@ class PageResponseV2(PageResponse):
     # judgement about a row rather than something written in it. Only an engine
     # that is asked the question fills it; the rest send eight blanks.
     outside_minato: list[str] = Field(default_factory=list)
+    # 調査対象種, the same shape beside it, for the same reasons: whether the
+    # row's 発見した虫の名前 names one of the species the survey counts.
+    target_species: list[str] = Field(default_factory=list)
 
 
 class SheetInfoV2(SheetInfo):

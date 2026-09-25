@@ -77,6 +77,7 @@ from .gemini import (
     prompt_fingerprint_v2,
     response_schema,
     response_schema_v2,
+    target_species_marks,
     text_boxes,
     text_boxes_v2,
 )
@@ -533,6 +534,7 @@ class LMStudioEngine(OCREngine):
             # than handed back in the reading: see the note at the top.
             logger.info("the model LM Studio had loaded is %s", answered)
         marks: dict[int, str] = {}
+        species: dict[int, str] = {}
         try:
             if self._sheet == config.SHEET_V1:
                 boxes, found = text_boxes(parse_rows(answer))
@@ -541,7 +543,9 @@ class LMStudioEngine(OCREngine):
                 boxes, found = text_boxes_v2(page)
                 marks, more = outside_minato_marks(page)
                 found += more
+                species, more = target_species_marks(page)
+                found += more
         except OCRError as exc:
             exc.usage = spent
             raise
-        return Reading(boxes, spent, found, marks)
+        return Reading(boxes, spent, found, marks, species)
