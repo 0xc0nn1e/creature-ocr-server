@@ -693,6 +693,20 @@ LMSTUDIO_TIMEOUT_SECONDS = 120.0
 LMSTUDIO_TEMPERATURE = 0.0
 LMSTUDIO_TOP_P = 0.1
 
+# pyClaudeApi, a separate local server that reads a page with the Claude Code
+# CLI behind LM Studio's OpenAI-compatible surface. Only the key names are here.
+#
+# No default URL, unlike LM Studio: there is no conventional port to guess, and
+# this server already holds 8000. The key is demanded too, because pyClaudeApi
+# refuses every request that does not carry one.
+PYCLAUDEAPI_ENV_BASE_URL = "PYCLAUDEAPI_BASE_URL"
+PYCLAUDEAPI_ENV_API_KEY = "PYCLAUDEAPI_API_KEY"
+PYCLAUDEAPI_ENV_TIMEOUT = "PYCLAUDEAPI_TIMEOUT_SECONDS"
+
+# One attempt. Under SERVER_REQUEST_DEADLINE_SECONDS for the same reason as
+# lmstudio's: the deadline owns the whole request and this owns one attempt.
+PYCLAUDEAPI_TIMEOUT_SECONDS = 240.0
+
 # Which engine a request that names none is served with. Only the key name and
 # the fallback are here; the value is read where the engine is built, so a test
 # can set the environment without reimporting this module. (6.5)

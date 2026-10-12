@@ -306,6 +306,15 @@ class TextBoxesTest(unittest.TestCase):
         self.assertEqual([b.text for b in found], ["き"])
         self.assertTrue(any("unsure is not a list" in note for note in said))
 
+    def test_a_flag_that_is_not_a_column_name_is_dropped_not_raised(self):
+        # An engine that takes the schema as advice can send an object here,
+        # and an object cannot be looked up in a set. (5.1)
+        flag = {"field": "symbol", "reason": "smudged"}
+        found, said = text_boxes([row(1, symbol="き", unsure=[flag])])
+
+        self.assertEqual([(b.text, b.unsure) for b in found], [("き", False)])
+        self.assertTrue(any("unsure names no column" in note for note in said))
+
     def test_an_empty_value_takes_no_box(self):
         self.assertEqual(boxes([row(1, bug_name="", symbol="  ")]), [])
 
@@ -336,6 +345,13 @@ class TextBoxesTest(unittest.TestCase):
         found, said = text_boxes([row("no.3", symbol="き")])
 
         self.assertEqual(found, [])
+        self.assertTrue(any("is not a row number" in note for note in said))
+
+    def test_a_row_numbered_with_infinity_is_dropped_not_raised(self):
+        # float() takes "inf", and no int can hold the result. (5.1)
+        found, said = text_boxes([row("inf", symbol="き"), row(2, symbol="ち")])
+
+        self.assertEqual([b.text for b in found], ["ち"])
         self.assertTrue(any("is not a row number" in note for note in said))
 
     def test_a_second_row_claiming_a_number_is_dropped_not_merged(self):

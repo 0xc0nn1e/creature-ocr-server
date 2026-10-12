@@ -44,16 +44,24 @@ SDK・セルグリッド・値チェックは全部こちら**。アプリ側に
 だけでもパッケージは入り、テストも全部通る。エンジン名と extra 名は同じ語なので、
 `engine=gemini` と `pip install -e ".[gemini]"` は対になる。(4.2, 6.5)
 
-エンジンは四つ。`documentai` を使うなら `.[documentai]`、`nemotron` と
-`lmstudio` は**何も要らない** ― どちらも HTTP を一回投げるだけなので、基本
-インストールのまま動く。`.[nemotron]` が要るのは `NEMOTRON_MAX_BYTES` を設定した
-ときだけで、その一つの設定のためだけに pymupdf が入る。`lmstudio` に extra は
-無い ― 入れるものが何も無いので、`.[lmstudio]` という名前も作っていない。
+エンジンは五つ。`documentai` を使うなら `.[documentai]`、`nemotron`、
+`lmstudio`、`pyclaudeapi` は**何も要らない** ― どれも HTTP を一回投げるだけなので、
+基本インストールのまま動く。`.[nemotron]` が要るのは `NEMOTRON_MAX_BYTES` を設定した
+ときだけで、その一つの設定のためだけに pymupdf が入る。`lmstudio` と `pyclaudeapi`
+に extra は無い ― 入れるものが何も無いので、`.[lmstudio]` や `.[pyclaudeapi]` と
+いう名前も作っていない。
 
 `lmstudio` は**モデルを指定しないエンジン**。LM Studio 側で読み込んでいるモデルが
 そのまま読み手になるので、このサーバはモデルを選ばず、`model` を送れば 400 に
 なる。既定の宛先は `http://127.0.0.1:1234/v1` で、設定は `LMSTUDIO_BASE_URL` だけ
 ― LM Studio をそのまま起動しているなら、埋めるものは一つも無い。
+
+`pyclaudeapi` は、Claude Code CLI でページを読む別サーバ pyClaudeApi に繋ぐ
+エンジン。pyClaudeApi は LM Studio と同じ OpenAI 互換の口で答えるので、送る
+中身は `lmstudio` と同じ（Gemini と同じ質問）。違うのは設定だけで、
+`PYCLAUDEAPI_BASE_URL` と `PYCLAUDEAPI_API_KEY` の**両方が必須**。このサーバが
+8000 を使うので、pyClaudeApi は別のポート（例: `http://127.0.0.1:8010/v1`）で
+動かす。モデルは Claude Code 側が決めるので、`model` を送れば 400 になる。
 
 ## Docker で動かす
 
@@ -176,6 +184,15 @@ SDK が自分で同じファイルを見つける。(6.3)
         "cache_name": "nemotron-v2_multilingual",
         "default_model": "",
         "models": []
+      },
+      {
+        "name": "pyclaudeapi",
+        "ready": true,
+        "detail": "",
+        "default_model": "",
+        "settings": "pyclaudeapi http://127.0.0.1:8010/v1/chat/completions grid=d103bef3 prompt=7b48ed75 checks=79ebbe0c",
+        "cache_name": "pyclaudeapi",
+        "models": []
       }
     ]
 
@@ -185,12 +202,12 @@ SDK が自分で同じファイルを見つける。(6.3)
 ここで公開する。設定が足りないエンジンは `ready: false` になり、`detail` に
 コンストラクタが投げるはずだった文がそのまま入る。(3.2, 4.2)
 
-`documentai`、`nemotron`、`lmstudio` の `models` が空なのは、**読み手がモデル ID
-ではない**から。順に、プロセッサ、`NEMOTRON_ENDPOINT` が指す先そのもの、そして
-LM Studio 側で読み込まれているモデルが読み手で、どれもリクエストで選べるものでは
-ない。`model` を送れば 400 になる。
+`documentai`、`nemotron`、`lmstudio`、`pyclaudeapi` の `models` が空なのは、
+**読み手がモデル ID ではない**から。順に、プロセッサ、`NEMOTRON_ENDPOINT` が指す先
+そのもの、LM Studio 側で読み込まれているモデル、そして Claude Code が選ぶモデルが
+読み手で、どれもリクエストで選べるものではない。`model` を送れば 400 になる。
 
-だからこの三つは `settings` と `cache_name` を**エンジンの階層で**返す。モデルの
+だからこの四つは `settings` と `cache_name` を**エンジンの階層で**返す。モデルの
 無いエンジンには `models[]` という置き場所が無く、そこに何も無いままだと
 キャッシュキーが**頼む前に読める場所のどこにも存在しない**ことになる。頼む前に
 キャッシュを見られるようにするのがこのエンドポイントの唯一の仕事なので、それ
@@ -211,6 +228,10 @@ LM Studio 側で読み込まれているモデルが読み手で、どれもリ�
 モデル名は**サーバのログ**に 1 ページ 1 行、`X-Request-ID` の隣に出る。それが
 唯一の記録 ― 応答には入らない。`findings` はクライアントのエラーファイルなので、
 きれいに読めたページにも必ず 1 行増えるのは記録ではなく雑音になる。
+
+`pyclaudeapi` の鍵にも同じ理由でモデルが入っていない。こちらはログにも残らない ―
+pyClaudeApi は答えたモデルを常に `claude-cli` と返すので、ログの 1 行も
+`claude-cli` としか書かない。
 
 ### `GET /v1/sheet`
 
@@ -383,8 +404,8 @@ v2 が付いてくるし、どちらも打ち間違えようがない。
 `rows` の中ではなく横に置くのは、行のキーを 11 列と照合している既存のクライアントが
 そのまま全ページを読めるようにするため。
 
-- 判定するのは質問を受ける `gemini` と `lmstudio` だけ。`documentai` と `nemotron`
-  は常に 8 個とも空。
+- 判定するのは質問を受ける `gemini`、`lmstudio`、`pyclaudeapi` だけ。`documentai`
+  と `nemotron` は常に 8 個とも空。
 - 三つの印以外が返ってきたら空にする。町も名前も空の行に付いた印も捨てる。
   どちらも `findings` に残る。
 - 判定に使う列、印の意味、港区の町名一覧は `config.py` の `OUTSIDE_MINATO_FROM`・
@@ -411,7 +432,8 @@ v2 が付いてくるし、どちらも打ち間違えようがない。
 プロンプトに挙げる書き方の例は作ったものか運用で読んだページのもので、ベンチマークの
 正解ラベルからは取っていない。
 
-- 判定するのは `gemini` と `lmstudio` だけ。`documentai` と `nemotron` は常に 8 個とも空。
+- 判定するのは `gemini`、`lmstudio`、`pyclaudeapi` だけ。`documentai` と `nemotron`
+  は常に 8 個とも空。
 - 二つの印以外が返ってきたら空にする。虫の名前が空の行（チェックで空にされた行を
   含む）に付いた印も捨てる。どちらも `findings` に残る。
 - 対象種の一覧と印の意味は `config.py` の `TARGET_SPECIES`・`TARGET_SPECIES_MARKS`。
@@ -532,13 +554,19 @@ Python なら:
 サーバのログにしかないので、失敗を記録するときは `X-Request-ID` を必ず一緒に
 残す。それが唯一の突き合わせ手段になる。
 
+**`pyclaudeapi` で全ページが 502 になったら、まず鍵を疑う。**
+`PYCLAUDEAPI_API_KEY` が pyClaudeApi 側の `CLAUDE_OCR_API_KEY` と食い違っていると、
+pyClaudeApi の 401 はエンジンの失敗として 4 回試されたうえで 502 になる。上の表の
+401 とは別物なので、バッチは止まらない。`GET /v1/engines` は鍵が設定されているか
+しか見ないので `ready: true` のまま。サーバのログに `HTTP 401` が並んでいるはず。
+
 ### 4. キャッシュの鍵
 
 `cache_name` がディレクトリ名、`settings` がその中の鍵。**どのエンジンでも
 `GET /v1/engines` で先に取れる**ので、ページを頼む**前に**キャッシュを見て、
 当たれば 1 回も課金せずに済む。gemini はモデルごとに `models[]` の中、
-`documentai`、`nemotron`、`lmstudio` はモデルを取らないのでエンジンの階層に
-入っている。どちらを読むかは `models` が空かどうかで決まる。
+`documentai`、`nemotron`、`lmstudio`、`pyclaudeapi` はモデルを取らないので
+エンジンの階層に入っている。どちらを読むかは `models` が空かどうかで決まる。
 
 v2 を使うなら鍵も `GET /v2/engines` から取る。同じエンジンの同じモデルでも
 `settings` と `cache_name` は v1 と違い、**違わなければならない**: 同じ紙の
@@ -573,7 +601,7 @@ v2 を使うなら鍵も `GET /v2/engines` から取る。同じエンジンの�
 | `GEMINI_MODEL` | なし | 既定のモデル ID |
 | `GOOGLE_APPLICATION_CREDENTIALS` | 空 | 空なら ADC、パスなら鍵ファイル、`{` 始まりなら鍵そのもの |
 | `GEMINI_MODELS` | `config.py` の一覧 | 許可するモデル、カンマ区切り |
-| `OCR_ENGINE` | `gemini` | 既定のエンジン。`gemini` / `documentai` / `nemotron` / `lmstudio` |
+| `OCR_ENGINE` | `gemini` | 既定のエンジン。`gemini` / `documentai` / `nemotron` / `lmstudio` / `pyclaudeapi` |
 | `DOCUMENTAI_LOCATION` | なし | Document AI のリージョン。`us` か `eu` のみ |
 | `DOCUMENTAI_PROCESSOR_ID` | なし | Document OCR プロセッサの ID |
 | `NEMOTRON_ENDPOINT` | なし | ページを POST する URL そのもの。何も足さない |
@@ -584,6 +612,9 @@ v2 を使うなら鍵も `GET /v2/engines` から取る。同じエンジンの�
 | `LMSTUDIO_API_KEY` | 空 | 空なら Authorization ヘッダを送らない。LM Studio 自身は見ない |
 | `LMSTUDIO_MODEL` | 空 | **通常は空**。名前の無いリクエストを拒む LM Studio のための逃げ道だけ |
 | `LMSTUDIO_TIMEOUT_SECONDS` | 120 | 1 回の試行の上限。ローカルのモデルは遅いので上げる余地がある |
+| `PYCLAUDEAPI_BASE_URL` | なし | pyClaudeApi の base URL。`/chat/completions` を足す |
+| `PYCLAUDEAPI_API_KEY` | なし | pyClaudeApi の bearer トークン。pyClaudeApi 側の `CLAUDE_OCR_API_KEY` と同じ値 |
+| `PYCLAUDEAPI_TIMEOUT_SECONDS` | 240 | 1 回の試行の上限 |
 | `SERVER_API_KEY` | 空 | 設定すると `X-API-Key` か `Authorization: Bearer` を要求する |
 | `SERVER_MAX_IMAGE_BYTES` | 20 MiB | 受け付けるページの上限 |
 | `SERVER_MAX_CONCURRENCY` | 4 | 同時に走らせるエンジン呼び出し |
@@ -621,7 +652,9 @@ SDK クライアントが増え続ける。
 - **クライアントの読み取りタイムアウトは
   `SERVER_QUEUE_TIMEOUT_SECONDS + SERVER_REQUEST_DEADLINE_SECONDS` に 1 回分の
   呼び出しを足した値より大きくする。** 既定値のままなら 30 + 300 + 90 で
-  420 秒。接続タイムアウトと読み取りタイムアウトは別の数値である。
+  420 秒。`pyclaudeapi` は 1 回分が `PYCLAUDEAPI_TIMEOUT_SECONDS`（既定 240）まで
+  延びうるので、30 + 300 + 240 で 570 秒。接続タイムアウトと読み取りタイムアウトは
+  別の数値である。
 - **前段にリバースプロキシを置くなら、最初に壊れるのはその読み取りタイムアウト。**
   nginx の既定は 60 秒で、健全なだけの遅いページを三分の一で切る。
 - 予算切れは 504 で、502 ではない。自分で決めた予算の話であって、エンジンが

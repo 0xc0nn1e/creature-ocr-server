@@ -553,7 +553,7 @@ def _row_number(entry: dict, position: int, notes: list[str]) -> int | None:
     try:
         # float first, so both 3 and a JSON 3.0 arrive as 3.
         number = int(float(raw))
-    except (TypeError, ValueError):
+    except (TypeError, ValueError, OverflowError):
         notes.append(f"dropped a row: {raw!r} is not a row number")
         return None
     if not 1 <= number <= config.ROWS_PER_PAGE:
@@ -582,7 +582,9 @@ def _unsure_fields(entry: dict, number: int, notes: list[str]) -> set[str]:
     fields = {field for field, _ in config.OCR_FIELDS}
     found = set()
     for name in listed:
-        if name in fields:
+        # A string first: an object or a list cannot be looked up in a set,
+        # and the TypeError would cost the whole page. (5.1)
+        if isinstance(name, str) and name in fields:
             found.add(name)
         else:
             notes.append(

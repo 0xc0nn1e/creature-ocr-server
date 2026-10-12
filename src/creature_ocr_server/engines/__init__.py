@@ -7,10 +7,10 @@ backend is one file plus one entry below. (4.2, 6.5)
 
 Importing the modules below is therefore free: each names its SDK inside its own
 loader, which nothing calls until an engine is actually built. That is what lets
-this registry hold every engine without making every SDK a dependency. nemotron
-and lmstudio have no SDK to name - each is one HTTP request - so they cost
-nothing either way, and the one library nemotron can want is named inside the
-function that wants it.
+this registry hold every engine without making every SDK a dependency.
+nemotron, lmstudio and pyclaudeapi have no SDK to name - each is one HTTP
+request - so they cost nothing either way, and the one library nemotron can
+want is named inside the function that wants it.
 
 Two things here that the desktop pipeline's registry does not have, and both
 come from being a server:
@@ -39,12 +39,14 @@ from .documentai import DocumentAIEngine
 from .gemini import GeminiEngine
 from .lmstudio import LMStudioEngine
 from .nemotron import NemotronEngine
+from .pyclaudeapi import PyClaudeAPIEngine
 
 ENGINES: dict[str, type[OCREngine]] = {
     DocumentAIEngine.name: DocumentAIEngine,
     GeminiEngine.name: GeminiEngine,
     LMStudioEngine.name: LMStudioEngine,
     NemotronEngine.name: NemotronEngine,
+    PyClaudeAPIEngine.name: PyClaudeAPIEngine,
 }
 
 # Built engines, keyed by (engine, model, sheet). Bounded by each engine's own
